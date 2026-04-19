@@ -1,0 +1,126 @@
+import { invoke } from '@tauri-apps/api/core'
+import { open } from '@tauri-apps/plugin-dialog'
+import type { FileNode } from '../types'
+
+export interface SearchResult {
+  path: string
+  name: string
+  snippet: string
+  matchType: 'name' | 'content'
+}
+
+/** Normalize OS separators → forward-slash throughout the tree */
+function normalizeNode(node: FileNode): FileNode {
+  return {
+    ...node,
+    path: node.path.replace(/\\/g, '/'),
+    children: node.children?.map(normalizeNode),
+  }
+}
+
+/** Normalize vault path from dialog (Windows uses \, we use /) */
+export function normalizeVaultPath(path: string): string {
+  return path.replace(/\\/g, '/')
+}
+
+export async function selectVaultFolder(): Promise<string | null> {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: 'Select Vault Folder',
+  })
+  return selected as string | null
+}
+
+export async function openVault(path: string): Promise<FileNode[]> {
+  const tree = await invoke<FileNode[]>('open_vault', { path })
+  return tree.map(normalizeNode)
+}
+
+export async function readNote(path: string): Promise<string> {
+  return invoke<string>('read_note', { path })
+}
+
+export async function writeNote(path: string, content: string): Promise<void> {
+  return invoke<void>('write_note', { path, content })
+}
+
+export async function createNote(path: string): Promise<void> {
+  return invoke<void>('create_note', { path })
+}
+
+export async function renameNote(oldPath: string, newPath: string): Promise<void> {
+  return invoke<void>('rename_note', { oldPath, newPath })
+}
+
+export async function deleteNote(path: string): Promise<void> {
+  return invoke<void>('delete_note', { path })
+}
+
+export async function createFolder(path: string): Promise<void> {
+  return invoke<void>('create_folder', { path })
+}
+
+export async function renameFolder(oldPath: string, newPath: string): Promise<void> {
+  return invoke<void>('rename_folder', { oldPath, newPath })
+}
+
+export async function deleteFolder(path: string): Promise<void> {
+  return invoke<void>('delete_folder', { path })
+}
+
+export async function moveFolder(oldPath: string, newPath: string): Promise<void> {
+  return invoke<void>('move_folder', { oldPath, newPath })
+}
+
+export async function searchVault(vaultPath: string, query: string): Promise<SearchResult[]> {
+  return invoke<SearchResult[]>('search_vault', { vaultPath, query })
+}
+
+export async function readImage(path: string): Promise<string> {
+  return invoke<string>('read_image', { path })
+}
+
+export async function backupVault(vaultPath: string, outputPath: string): Promise<void> {
+  return invoke<void>('backup_vault', { vaultPath, outputPath })
+}
+
+export async function propagateRename(
+  vaultPath: string,
+  oldName: string,
+  newName: string
+): Promise<string[]> {
+  return invoke<string[]>('propagate_rename', { vaultPath, oldName, newName })
+}
+
+// ---- File Recovery ----
+
+export interface Snapshot {
+  path: string
+  noteName: string
+  timestamp: string
+  size: number
+}
+
+export async function saveSnapshot(
+  vaultPath: string,
+  notePath: string,
+  content: string
+): Promise<void> {
+  return invoke<void>('save_snapshot', { vaultPath, notePath, content })
+}
+
+export async function listSnapshots(
+  vaultPath: string,
+  notePath: string
+): Promise<Snapshot[]> {
+  return invoke<Snapshot[]>('list_snapshots', { vaultPath, notePath })
+}
+
+export async function readSnapshot(path: string): Promise<string> {
+  return invoke<string>('read_snapshot', { path })
+}
+
+export async function deleteSnapshot(path: string): Promise<void> {
+  return invoke<void>('delete_snapshot', { path })
+}
