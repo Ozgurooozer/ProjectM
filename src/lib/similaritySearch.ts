@@ -1,5 +1,7 @@
 import { embeddingWorker } from './embeddingWorkerManager'
-import { type VectorStore, type NoteVector } from './vectorStore'
+import { type VectorStore, type ChunkVector } from './vectorStore'
+
+// ── Cosine similarity ─────────────────────────────────────────────────────────
 
 export function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0
@@ -10,12 +12,15 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return Math.max(-1, Math.min(1, dot))
 }
 
+// ── Result types ──────────────────────────────────────────────────────────────
+
 export interface SimilarityResult {
   path: string
   title: string
   snippet: string
   score: number
   scoreLabel: string
+  headingPath?: string   // best matching section
 }
 
 function scoreLabel(score: number): string {
@@ -24,6 +29,54 @@ function scoreLabel(score: number): string {
   if (score >= 0.50) return 'Related'
   return 'Loosely related'
 }
+
+// ── Chunk-based search helpers ────────────────────────────────────────────────
+
+/**
+ * Given a query vector and all chunks, returns the best score per note.
+ * Multiple chunks from the same note are collapsed — only the highest score wins.
+ */
+function computeTopKByNote(
+  queryVector: number[],
+  allChunks: ChunkVector[],
+  options: {
+    topK: number
+    minScore: number
+    excludePath: string | null
+  }
+): SimilarityResult[] {
+  const { topK, minScore, excludePath } = options
+
+  // Best score per note
+  const bestByNote = new Map<string, { score: number; chunk: ChunkVector }>()
+
+  for (const chunk of allChunks) {
+    if (chunk.notePath === excludePath) continue
+    if (chunk.vector.length === 0) continue
+
+    const score = cosineSimilarity(queryVector, chunk.vector)
+    if (score < minScore) continue
+
+    const existing = bestByNote.get(chunk.notePath)
+    if (!existing || score > existing.score) {
+      bestByNote.set(chunk.notePath, { score, chunk })
+    }
+  }
+
+  return Array.from(bestByNote.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK)
+    .map(({ score, chunk }) => ({
+      path: chunk.notePath,
+      title: chunk.title,
+      snippet: chunk.snippet,
+      score,
+      scoreLabel: scoreLabel(score),
+      headingPath: chunk.headingPath || undefined,
+    }))
+}
+
+// ── Public search API ─────────────────────────────────────────────────────────
 
 export async function searchByQuery(
   query: string,
@@ -42,9 +95,8 @@ export async function searchByQuery(
     `Represent this query for searching relevant passages: ${query}`
   )
 
-  const allVectors = await vectorStore.getAllVectors()
-
-  return computeTopK(queryVector, allVectors, { topK, minScore, excludePath })
+  const allChunks = await vectorStore.getAllChunks()
+  return computeTopKByNote(queryVector, allChunks, { topK, minScore, excludePath })
 }
 
 export async function searchByNote(
@@ -55,54 +107,24 @@ export async function searchByNote(
     minScore?: number
   } = {}
 ): Promise<SimilarityResult[]> {
-  const { topK = 8, minScore = 0.50 } = options
+  const { topK = 8, minScore = 0.45 } = options
 
-  const noteVector = await vectorStore.getVector(notePath)
-  if (!noteVector) return []
+  // Get all chunks for this note, use the best one as query vector
+  const noteChunks = await vectorStore.getChunksForNote(notePath)
+  if (noteChunks.length === 0) return []
 
-  const allVectors = await vectorStore.getAllVectors()
+  // Use first chunk as representative (title + intro usually most informative)
+  const queryVector = noteChunks[0].vector
 
-  return computeTopK(noteVector.vector, allVectors, {
+  const allChunks = await vectorStore.getAllChunks()
+  return computeTopKByNote(queryVector, allChunks, {
     topK,
     minScore,
     excludePath: notePath,
   })
 }
 
-function computeTopK(
-  queryVector: number[],
-  allVectors: NoteVector[],
-  options: {
-    topK: number
-    minScore: number
-    excludePath: string | null
-  }
-): SimilarityResult[] {
-  const { topK, minScore, excludePath } = options
-
-  const results: SimilarityResult[] = []
-
-  for (const entry of allVectors) {
-    if (entry.path === excludePath) continue
-    if (entry.vector.length === 0) continue
-
-    const score = cosineSimilarity(queryVector, entry.vector)
-
-    if (score >= minScore) {
-      results.push({
-        path: entry.path,
-        title: entry.title,
-        snippet: entry.snippet,
-        score,
-        scoreLabel: scoreLabel(score),
-      })
-    }
-  }
-
-  return results
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK)
-}
+// ── Hybrid search result types ────────────────────────────────────────────────
 
 export interface HybridResult extends SimilarityResult {
   matchType: 'semantic' | 'keyword' | 'both'
@@ -112,7 +134,7 @@ export interface HybridResult extends SimilarityResult {
 export function mergeSearchResults(
   semanticResults: SimilarityResult[],
   keywordPaths: string[],
-  allVectors: NoteVector[]
+  allChunks: ChunkVector[]
 ): HybridResult[] {
   const keywordSet = new Set(keywordPaths)
   const semanticMap = new Map(semanticResults.map((r) => [r.path, r]))
@@ -128,13 +150,14 @@ export function mergeSearchResults(
 
   for (const path of keywordPaths) {
     if (semanticMap.has(path)) continue
-    const vectorEntry = allVectors.find((v) => v.path === path)
-    if (!vectorEntry) continue
+    // Find first chunk for this note
+    const chunk = allChunks.find((c) => c.notePath === path)
+    if (!chunk) continue
 
     merged.push({
       path,
-      title: vectorEntry.title,
-      snippet: vectorEntry.snippet,
+      title: chunk.title,
+      snippet: chunk.snippet,
       score: 0.4,
       scoreLabel: 'Keyword match',
       matchType: 'keyword',

@@ -9,14 +9,18 @@ export function useSimilarNotes() {
     embeddingStatus,
     setSimilarNotes,
   } = useAppStore()
-  const lastPathRef = useRef<string | null>(null)
+
+  // Track a compound key so the search re-runs when:
+  // - the active note changes, OR
+  // - the model transitions to 'ready' (so a note already open gets searched)
+  const lastKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!activeNotePath || !vectorStore) return
-    if (embeddingStatus !== 'ready') return
-    if (activeNotePath === lastPathRef.current) return
+    if (!activeNotePath || !vectorStore || embeddingStatus !== 'ready') return
 
-    lastPathRef.current = activeNotePath
+    const key = `${activeNotePath}::${embeddingStatus}`
+    if (key === lastKeyRef.current) return
+    lastKeyRef.current = key
 
     searchByNote(activeNotePath, vectorStore, { topK: 8, minScore: 0.45 })
       .then(setSimilarNotes)

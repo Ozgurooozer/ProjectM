@@ -1,7 +1,8 @@
 import { embeddingWorker } from './embeddingWorkerManager'
-import { type VectorStore, type NoteVector } from './vectorStore'
+import { type VectorStore, type ChunkVector } from './vectorStore'
 import { hashContent } from './contentHash'
 import { preprocessForEmbedding, extractSnippet } from './textPreprocessor'
+import { chunkMarkdownText } from './textChunker'
 import { flattenTree } from './wikilinks'
 import { readNote } from './tauri'
 import type { FileNode } from '../types'
@@ -26,19 +27,26 @@ function shouldIndex(path: string): boolean {
   )
 }
 
-async function readAndPrepare(
-  path: string
-): Promise<{ raw: string; text: string; hash: string; snippet: string } | null> {
+async function readAndPrepare(path: string): Promise<{
+  raw: string
+  cleanText: string
+  hash: string
+  snippet: string
+  title: string
+} | null> {
   try {
     const raw = await readNote(path)
-    const text = preprocessForEmbedding(path, raw)
+    const cleanText = preprocessForEmbedding(path, raw)
     const hash = hashContent(raw)
     const snippet = extractSnippet(raw)
-    return { raw, text, hash, snippet }
+    const title = path.split(/[\\/]/).pop()?.replace(/\.md$/, '') ?? ''
+    return { raw, cleanText, hash, snippet, title }
   } catch {
     return null
   }
 }
+
+// ── Full vault indexing ───────────────────────────────────────────────────────
 
 export async function indexVault(
   fileTree: FileNode[],
@@ -57,9 +65,10 @@ export async function indexVault(
     message: 'Checking which notes need indexing...',
   })
 
+  // Read all notes and compute hashes
   const noteData: Array<{
     path: string
-    text: string
+    cleanText: string
     hash: string
     snippet: string
     title: string
@@ -76,13 +85,14 @@ export async function indexVault(
     currentHashes.push({ path, contentHash: prepared.hash })
     noteData.push({
       path,
-      text: prepared.text,
+      cleanText: prepared.cleanText,
       hash: prepared.hash,
       snippet: prepared.snippet,
-      title: path.split(/[\\/]/).pop()?.replace(/\.md$/, '') ?? '',
+      title: prepared.title,
     })
   }
 
+  // Find stale and deleted notes
   const stale = await vectorStore.findStaleNotes(currentHashes)
   const staleSet = new Set(stale)
   const toIndex = noteData.filter((n) => staleSet.has(n.path))
@@ -90,7 +100,7 @@ export async function indexVault(
   const currentPathSet = new Set(allPaths)
   const deleted = await vectorStore.findDeletedNotes(currentPathSet)
   for (const deletedPath of deleted) {
-    await vectorStore.deleteVector(deletedPath)
+    await vectorStore.deleteChunksForNote(deletedPath)
   }
 
   if (toIndex.length === 0) {
@@ -105,6 +115,7 @@ export async function indexVault(
     return stats
   }
 
+  // Index stale notes with chunk-based approach
   for (let i = 0; i < toIndex.length; i++) {
     if (signal?.aborted) return stats
 
@@ -119,19 +130,7 @@ export async function indexVault(
     })
 
     try {
-      const vector = await embeddingWorker.embed(note.text)
-
-      const entry: NoteVector = {
-        path: note.path,
-        contentHash: note.hash,
-        vector,
-        title: note.title,
-        snippet: note.snippet,
-        indexedAt: Date.now(),
-        noteLength: note.text.length,
-      }
-
-      await vectorStore.upsertVector(entry)
+      await indexNoteChunks(note.path, note.cleanText, note.hash, note.snippet, note.title, vectorStore)
       stats.indexed++
     } catch (err) {
       console.warn(`Failed to embed note: ${note.path}`, err)
@@ -143,7 +142,7 @@ export async function indexVault(
   await vectorStore.setMeta({
     vaultPath: '',
     modelVersion: 'bge-micro-v2',
-    totalNotes: total,
+    totalNotes: toIndex.length,
     lastFullIndex: Date.now(),
   })
 
@@ -152,11 +151,53 @@ export async function indexVault(
     current: toIndex.length,
     total: toIndex.length,
     currentNoteName: '',
-    message: `Indexed ${stats.indexed} notes`,
+    message: `Indexed ${stats.indexed} notes (${total} chunks total)`,
   })
 
   return stats
 }
+
+// ── Single note chunk indexing ────────────────────────────────────────────────
+
+async function indexNoteChunks(
+  notePath: string,
+  cleanText: string,
+  contentHash: string,
+  snippet: string,
+  title: string,
+  vectorStore: VectorStore
+): Promise<void> {
+  // Delete old chunks for this note
+  await vectorStore.deleteChunksForNote(notePath)
+
+  // Split into chunks
+  const chunks = chunkMarkdownText(cleanText)
+
+  // Embed each chunk with heading context
+  const chunkVectors: ChunkVector[] = []
+
+  for (const chunk of chunks) {
+    const vector = await embeddingWorker.embedWithHeading(chunk.text, chunk.headingPath)
+
+    chunkVectors.push({
+      id: `${notePath}::${chunk.index}`,
+      notePath,
+      chunkIndex: chunk.index,
+      contentHash,
+      vector,
+      title,
+      snippet,
+      headingPath: chunk.headingPath,
+      startOffset: chunk.startOffset,
+      endOffset: chunk.endOffset,
+      indexedAt: Date.now(),
+    })
+  }
+
+  await vectorStore.upsertChunks(chunkVectors)
+}
+
+// ── Incremental single note indexing (called after autosave) ──────────────────
 
 export async function indexSingleNote(
   notePath: string,
@@ -167,22 +208,13 @@ export async function indexSingleNote(
 
   const hash = hashContent(noteContent)
 
-  const existing = await vectorStore.getVector(notePath)
-  if (existing?.contentHash === hash) return
+  // Check if already up to date
+  const existingChunks = await vectorStore.getChunksForNote(notePath)
+  if (existingChunks.length > 0 && existingChunks[0].contentHash === hash) return
 
-  const text = preprocessForEmbedding(notePath, noteContent)
+  const cleanText = preprocessForEmbedding(notePath, noteContent)
   const snippet = extractSnippet(noteContent)
   const title = notePath.split(/[\\/]/).pop()?.replace(/\.md$/, '') ?? ''
 
-  const vector = await embeddingWorker.embed(text)
-
-  await vectorStore.upsertVector({
-    path: notePath,
-    contentHash: hash,
-    vector,
-    title,
-    snippet,
-    indexedAt: Date.now(),
-    noteLength: noteContent.length,
-  })
+  await indexNoteChunks(notePath, cleanText, hash, snippet, title, vectorStore)
 }

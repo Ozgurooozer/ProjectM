@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { eventBus } from '../../lib/events'
 import { searchVault, readNote } from '../../lib/tauri'
+
 import type { SearchResult } from '../../lib/tauri'
 import { searchByQuery, type SimilarityResult } from '../../lib/similaritySearch'
 import { useAppStore } from '../../store/appStore'
@@ -10,7 +11,7 @@ type CombinedResult =
   | (SearchResult & { resultType: 'keyword' })
   | (SimilarityResult & { resultType: 'semantic' })
 
-export function Search() {
+export function Search({ embedded = false }: { embedded?: boolean }) {
   const {
     vaultPath,
     vectorStore,
@@ -92,6 +93,7 @@ export function Search() {
   async function handleResultClick(path: string) {
     const content = await readNote(path)
     setActiveNote(path, content)
+    eventBus.emit('note:opened', { path, content })
     setQuery('')
     setResults([])
     inputRef.current?.blur()
@@ -100,7 +102,7 @@ export function Search() {
   const canUseAI = embeddingStatus === 'ready' && !!vectorStore
 
   return (
-    <div className="border-b border-zinc-700">
+    <div className={embedded ? 'flex flex-col flex-1 overflow-hidden' : 'border-b border-zinc-700'}>
       <div className="p-3 pb-0">
         <div className="relative">
           <input
@@ -110,7 +112,7 @@ export function Search() {
             type="search"
             value={query}
             onChange={handleChange}
-            placeholder="Search notes..."
+            placeholder="Search notes…"
             className="w-full bg-zinc-800 text-zinc-200 text-sm rounded px-3 py-1.5
                        outline-none focus:ring-1 focus:ring-violet-500
                        placeholder:text-zinc-600 pr-8"
@@ -146,8 +148,7 @@ export function Search() {
       )}
 
       {results.length > 0 && (
-        <ul className="mx-3 mb-3 space-y-1 max-h-72 overflow-y-auto
-                       border border-zinc-700 rounded-lg overflow-hidden">
+        <ul className={`mx-3 mb-3 space-y-1 overflow-y-auto border border-zinc-700 rounded-lg overflow-hidden ${embedded ? 'flex-1' : 'max-h-72'}`}>
           {results.map((result) => (
             <li key={result.path}>
               <button

@@ -18,9 +18,9 @@ export function Backlinks() {
   }
 
   return (
-    <div className="border-t border-zinc-700 p-3 max-h-64 overflow-y-auto shrink-0">
+    <div className="h-full overflow-y-auto p-3">
       <p className="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-2">
-        Backlinks ({entries.length})
+        {entries.length} {entries.length === 1 ? 'note links here' : 'notes link here'}
       </p>
       {entries.length === 0 ? (
         <p className="text-xs text-zinc-600">No notes link here</p>

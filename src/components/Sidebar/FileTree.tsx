@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { confirm } from '@tauri-apps/plugin-dialog'
+import { confirm, message } from '@tauri-apps/plugin-dialog'
 import { readNote, renameNote, deleteNote, openVault, renameFolder, deleteFolder, propagateRename } from '../../lib/tauri'
 import { useAppStore } from '../../store/appStore'
 import { showToast } from '../UI/Toast'
@@ -199,7 +199,7 @@ export const FileTree = React.memo(function FileTree({ nodes, depth, onError }: 
       setCutPath(null)
     } catch (err) {
       console.error('Paste failed:', err)
-      alert(`Could not move: ${String(err)}`)
+      await message(`Could not move: ${String(err)}`, { title: 'Move failed', kind: 'error' })
     }
   }
 
@@ -222,7 +222,7 @@ export const FileTree = React.memo(function FileTree({ nodes, depth, onError }: 
       if (activeNotePath === node.path) clearActiveNote()
     } catch (err) {
       console.error('Delete failed:', err)
-      alert(`Could not delete: ${String(err)}`)
+      await message(`Could not delete: ${String(err)}`, { title: 'Delete failed', kind: 'error' })
     }
     setContextMenu(null)
   }

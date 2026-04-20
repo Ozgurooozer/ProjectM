@@ -7,7 +7,6 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view'
 import { useAppStore } from '../../store/appStore'
 import { useAutosave } from './useAutosave'
-import { SaveStatus } from './SaveStatus'
 import { wikiLinkCompletion } from '../../lib/wikilinkCompletion'
 import { wikilinkEditorExtension } from '../../lib/wikilinkEditorExtension'
 import { writeNote, readNote } from '../../lib/tauri'
@@ -129,7 +128,6 @@ export function Editor({ showPreview, onTogglePreview }: Props) {
   }
 
   const noteName = activeNotePath.split(/[\\/]/).pop() ?? ''
-  const wordCount = noteContent.trim() ? noteContent.trim().split(/\s+/).length : 0
 
   return (
     <div className="flex flex-col h-full">
@@ -143,26 +141,24 @@ export function Editor({ showPreview, onTogglePreview }: Props) {
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs text-zinc-600">{wordCount} words</span>
-          <SaveStatus />
           <button
             onClick={toggleReadingMode}
             title="Reading mode (Ctrl+R)"
-            className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-0.5 rounded hover:bg-zinc-700"
+            className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-1 rounded hover:bg-zinc-700"
           >
             👁 Read
           </button>
           <button
             onClick={onTogglePreview}
             title={showPreview ? 'Hide preview' : 'Show preview'}
-            className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-0.5 rounded hover:bg-zinc-700"
+            className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-1 rounded hover:bg-zinc-700"
           >
             {showPreview ? '⊟ Preview' : '⊞ Preview'}
           </button>
           <div className="relative">
             <button
               onClick={() => setShowExportMenu((v) => !v)}
-              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-0.5 rounded hover:bg-zinc-700"
+              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-1 rounded hover:bg-zinc-700"
             >
               ↗ Export ▾
             </button>

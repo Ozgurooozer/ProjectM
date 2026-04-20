@@ -1,5 +1,6 @@
 import { useAppStore } from '../../store/appStore'
 import { readNote } from '../../lib/tauri'
+import { eventBus } from '../../lib/events'
 import type { SimilarityResult } from '../../lib/similaritySearch'
 
 export function SimilarNotesPanel() {
@@ -14,6 +15,7 @@ export function SimilarNotesPanel() {
   async function handleClick(path: string) {
     const content = await readNote(path)
     setActiveNote(path, content)
+    eventBus.emit('note:opened', { path, content })
   }
 
   if (!activeNotePath) {

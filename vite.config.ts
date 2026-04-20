@@ -8,6 +8,17 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
 
   clearScreen: false,
+
+  assetsInclude: ['**/*.onnx'],
+
+  optimizeDeps: {
+    exclude: ['@huggingface/transformers'],
+  },
+
+  worker: {
+    format: 'es',
+  },
+
   server: {
     port: 1420,
     strictPort: true,
@@ -22,18 +33,17 @@ export default defineConfig({
     watch: {
       ignored: ["**/src-tauri/**"],
     },
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+    },
   },
-  worker: {
-    format: 'es',
-  },
-  optimizeDeps: {
-    exclude: ['@xenova/transformers'],
-  },
+
   build: {
     target: 'esnext',
     rollupOptions: {
       output: {
         manualChunks: {
+          transformers: ['@huggingface/transformers'],
           d3: ["d3"],
           mermaid: ["mermaid"],
           codemirror: [

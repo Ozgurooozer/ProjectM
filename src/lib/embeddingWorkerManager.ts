@@ -142,6 +142,19 @@ class EmbeddingWorkerManager {
     })
   }
 
+  async embedWithHeading(text: string, headingPath: string): Promise<number[]> {
+    if (this.modelStatus !== 'ready') {
+      throw new Error('Model not ready. Call loadModel() first.')
+    }
+
+    const id = this.generateId()
+
+    return new Promise((resolve, reject) => {
+      this.pendingRequests.set(id, { resolve, reject })
+      this.worker!.postMessage({ type: 'EMBED_WITH_HEADING', id, text, headingPath })
+    })
+  }
+
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (this.modelStatus !== 'ready') {
       throw new Error('Model not ready. Call loadModel() first.')

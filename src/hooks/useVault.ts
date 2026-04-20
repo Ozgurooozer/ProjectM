@@ -3,9 +3,11 @@ import { selectVaultFolder, openVault, readNote, normalizeVaultPath } from '../l
 import { buildBacklinkIndex } from '../lib/backlinks'
 import { buildTagIndex } from '../lib/tags'
 import { flattenTree } from '../lib/wikilinks'
-import { saveLastVaultPath } from '../lib/persistence'
+import { saveLastVaultPath, saveRecentNotes } from '../lib/persistence'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { eventBus } from '../lib/events'
+import { openVectorStore, startIndexingWhenReady } from '../lib/vaultSetup'
+import type { IndexingProgress } from '../lib/indexingPipeline'
 
 export interface UseVaultReturn {
   vaultPath: string | null
@@ -16,6 +18,15 @@ export interface UseVaultReturn {
   rebuildIndexes: () => Promise<void>
 }
 
+function progressToStore(p: IndexingProgress) {
+  return {
+    phase: p.phase as 'idle' | 'checking' | 'embedding' | 'done' | 'error',
+    current: p.current,
+    total: p.total,
+    message: p.message,
+  }
+}
+
 export function useVault(): UseVaultReturn {
   const {
     vaultPath,
@@ -24,6 +35,9 @@ export function useVault(): UseVaultReturn {
     refreshFileTree,
     setBacklinkIndex,
     setTagIndex,
+    setVectorStore,
+    setIndexingProgress,
+    setRecentNotes,
   } = useAppStore()
 
   const vaultName = vaultPath ? (vaultPath.split(/[\\/]/).pop() ?? '') : ''
@@ -43,15 +57,37 @@ export function useVault(): UseVaultReturn {
   async function openVaultDialog() {
     const path = await selectVaultFolder()
     if (!path) return
+
     const normalized = normalizeVaultPath(path)
     const tree = await openVault(normalized)
     setVault(normalized, tree)
+
+    // Reset vault-scoped state
+    setRecentNotes([])
+    await saveRecentNotes([])
     await saveLastVaultPath(normalized)
+
     const appWindow = getCurrentWindow()
-    const name = normalized.split(/[\\/]/).pop() ?? normalized
-    appWindow.setTitle(`${name} — Vault`)
+    appWindow.setTitle(`${normalized.split(/[\\/]/).pop() ?? normalized} — Vault`)
+
+    // Rebuild search indexes
+    const [backlinkIdx, tagIdx] = await Promise.all([
+      buildBacklinkIndex(tree, readNote),
+      buildTagIndex(flattenTree(tree), readNote),
+    ])
+    setBacklinkIndex(backlinkIdx)
+    setTagIndex(tagIdx)
+
     eventBus.emit('vault:opened', { path: normalized })
-    await rebuildIndexes()
+
+    // AI vector store — open then start indexing when model is ready
+    const store = await openVectorStore(normalized)
+    setVectorStore(store)
+    startIndexingWhenReady(
+      store,
+      () => useAppStore.getState().fileTree,
+      (p) => setIndexingProgress(progressToStore(p))
+    )
   }
 
   async function reloadTree() {

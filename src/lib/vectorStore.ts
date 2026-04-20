@@ -1,5 +1,24 @@
 import { openDB, type IDBPDatabase } from 'idb'
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+/** One vector per chunk (not per note) */
+export interface ChunkVector {
+  /** Composite key: "notePath::chunkIndex" */
+  id: string
+  notePath: string
+  chunkIndex: number
+  contentHash: string   // hash of the full note (for stale detection)
+  vector: number[]
+  title: string         // note title
+  snippet: string       // first 200 chars of note
+  headingPath: string   // e.g. "Installation > Requirements"
+  startOffset: number
+  endOffset: number
+  indexedAt: number
+}
+
+/** Legacy — kept for backward compat, not used for new indexing */
 export interface NoteVector {
   path: string
   contentHash: string
@@ -18,8 +37,10 @@ export interface VaultMeta {
   lastFullIndex: number
 }
 
-const DB_VERSION = 1
-const STORE_VECTORS = 'note_vectors'
+// ── DB setup ──────────────────────────────────────────────────────────────────
+
+const DB_VERSION = 2   // bumped from 1 to trigger upgrade
+const STORE_CHUNKS = 'note_chunks'
 const STORE_META = 'vault_meta'
 
 function vaultPathToDbName(vaultPath: string): string {
@@ -32,16 +53,28 @@ async function openVaultDB(vaultPath: string): Promise<IDBPDatabase> {
   const dbName = vaultPathToDbName(vaultPath)
 
   return openDB(dbName, DB_VERSION, {
-    upgrade(db) {
-      if (!db.objectStoreNames.contains(STORE_VECTORS)) {
-        db.createObjectStore(STORE_VECTORS, { keyPath: 'path' })
+    upgrade(db, oldVersion) {
+      // Remove old stores from v1
+      if (oldVersion < 2) {
+        if (db.objectStoreNames.contains('note_vectors')) {
+          db.deleteObjectStore('note_vectors')
+        }
       }
+
+      if (!db.objectStoreNames.contains(STORE_CHUNKS)) {
+        const store = db.createObjectStore(STORE_CHUNKS, { keyPath: 'id' })
+        // Index by notePath for efficient per-note operations
+        store.createIndex('by_notePath', 'notePath', { unique: false })
+      }
+
       if (!db.objectStoreNames.contains(STORE_META)) {
         db.createObjectStore(STORE_META, { keyPath: 'id' })
       }
     },
   })
 }
+
+// ── VectorStore class ─────────────────────────────────────────────────────────
 
 export class VectorStore {
   private db: IDBPDatabase | null = null
@@ -60,62 +93,63 @@ export class VectorStore {
     return this.db
   }
 
-  async upsertVector(entry: NoteVector): Promise<void> {
-    await this.ensureOpen().put(STORE_VECTORS, entry)
+  // ── Chunk operations ────────────────────────────────────────────────────────
+
+  async upsertChunk(entry: ChunkVector): Promise<void> {
+    await this.ensureOpen().put(STORE_CHUNKS, entry)
   }
 
-  async upsertVectors(entries: NoteVector[]): Promise<void> {
+  async upsertChunks(entries: ChunkVector[]): Promise<void> {
     const db = this.ensureOpen()
-    const tx = db.transaction(STORE_VECTORS, 'readwrite')
+    const tx = db.transaction(STORE_CHUNKS, 'readwrite')
     await Promise.all([
       ...entries.map((e) => tx.store.put(e)),
       tx.done,
     ])
   }
 
-  async deleteVector(path: string): Promise<void> {
-    await this.ensureOpen().delete(STORE_VECTORS, path)
+  async deleteChunksForNote(notePath: string): Promise<void> {
+    const db = this.ensureOpen()
+    const tx = db.transaction(STORE_CHUNKS, 'readwrite')
+    const index = tx.store.index('by_notePath')
+    const keys = await index.getAllKeys(notePath)
+    await Promise.all(keys.map((k) => tx.store.delete(k)))
+    await tx.done
+  }
+
+  async getChunksForNote(notePath: string): Promise<ChunkVector[]> {
+    const db = this.ensureOpen()
+    const index = db.transaction(STORE_CHUNKS, 'readonly').store.index('by_notePath')
+    return index.getAll(notePath)
+  }
+
+  async getAllChunks(): Promise<ChunkVector[]> {
+    return this.ensureOpen().getAll(STORE_CHUNKS)
   }
 
   async clearAll(): Promise<void> {
-    await this.ensureOpen().clear(STORE_VECTORS)
-  }
-
-  async getVector(path: string): Promise<NoteVector | undefined> {
-    return this.ensureOpen().get(STORE_VECTORS, path)
-  }
-
-  async getAllVectors(): Promise<NoteVector[]> {
-    return this.ensureOpen().getAll(STORE_VECTORS)
-  }
-
-  async getIndexedPaths(): Promise<string[]> {
-    const db = this.ensureOpen()
-    const tx = db.transaction(STORE_VECTORS, 'readonly')
-    const keys = await tx.store.getAllKeys()
-    return keys as string[]
+    await this.ensureOpen().clear(STORE_CHUNKS)
   }
 
   async count(): Promise<number> {
-    return this.ensureOpen().count(STORE_VECTORS)
+    return this.ensureOpen().count(STORE_CHUNKS)
   }
 
-  async getMeta(): Promise<VaultMeta | undefined> {
-    return this.ensureOpen().get(STORE_META, 'meta')
-  }
+  // ── Stale / deleted detection ───────────────────────────────────────────────
 
-  async setMeta(meta: Omit<VaultMeta, 'id'>): Promise<void> {
-    await this.ensureOpen().put(STORE_META, { id: 'meta', ...meta })
-  }
-
+  /**
+   * Returns note paths that need re-indexing:
+   * - Not yet indexed, OR
+   * - Content hash changed
+   */
   async findStaleNotes(
     currentNotes: Array<{ path: string; contentHash: string }>
   ): Promise<string[]> {
     const stale: string[] = []
 
     for (const { path, contentHash } of currentNotes) {
-      const stored = await this.getVector(path)
-      if (!stored || stored.contentHash !== contentHash) {
+      const chunks = await this.getChunksForNote(path)
+      if (chunks.length === 0 || chunks[0].contentHash !== contentHash) {
         stale.push(path)
       }
     }
@@ -123,9 +157,91 @@ export class VectorStore {
     return stale
   }
 
+  /**
+   * Returns note paths that are indexed but no longer exist in the vault.
+   */
   async findDeletedNotes(currentPaths: Set<string>): Promise<string[]> {
-    const indexed = await this.getIndexedPaths()
-    return indexed.filter((p) => !currentPaths.has(p))
+    const allChunks = await this.getAllChunks()
+    const indexedPaths = new Set(allChunks.map((c) => c.notePath))
+    return Array.from(indexedPaths).filter((p) => !currentPaths.has(p))
+  }
+
+  // ── Legacy compatibility (used by similaritySearch for note-level search) ───
+
+  /**
+   * Returns the best (highest-scoring) chunk per note as a NoteVector-like object.
+   * Used by searchByNote to find the note's representative vector.
+   */
+  async getVector(notePath: string): Promise<NoteVector | undefined> {
+    const chunks = await this.getChunksForNote(notePath)
+    if (chunks.length === 0) return undefined
+    // Use first chunk as representative
+    const c = chunks[0]
+    return {
+      path: c.notePath,
+      contentHash: c.contentHash,
+      vector: c.vector,
+      title: c.title,
+      snippet: c.snippet,
+      indexedAt: c.indexedAt,
+      noteLength: c.endOffset,
+    }
+  }
+
+  /**
+   * Returns one NoteVector per note (first chunk) for backward compat.
+   */
+  async getAllVectors(): Promise<NoteVector[]> {
+    const allChunks = await this.getAllChunks()
+    // Group by notePath, take first chunk per note
+    const byNote = new Map<string, ChunkVector>()
+    for (const chunk of allChunks) {
+      if (!byNote.has(chunk.notePath)) {
+        byNote.set(chunk.notePath, chunk)
+      }
+    }
+    return Array.from(byNote.values()).map((c) => ({
+      path: c.notePath,
+      contentHash: c.contentHash,
+      vector: c.vector,
+      title: c.title,
+      snippet: c.snippet,
+      indexedAt: c.indexedAt,
+      noteLength: c.endOffset,
+    }))
+  }
+
+  /** Legacy upsert — wraps to chunk upsert */
+  async upsertVector(entry: NoteVector): Promise<void> {
+    const chunk: ChunkVector = {
+      id: `${entry.path}::0`,
+      notePath: entry.path,
+      chunkIndex: 0,
+      contentHash: entry.contentHash,
+      vector: entry.vector,
+      title: entry.title,
+      snippet: entry.snippet,
+      headingPath: '',
+      startOffset: 0,
+      endOffset: entry.noteLength,
+      indexedAt: entry.indexedAt,
+    }
+    await this.upsertChunk(chunk)
+  }
+
+  /** Legacy delete */
+  async deleteVector(notePath: string): Promise<void> {
+    await this.deleteChunksForNote(notePath)
+  }
+
+  // ── Meta ────────────────────────────────────────────────────────────────────
+
+  async getMeta(): Promise<VaultMeta | undefined> {
+    return this.ensureOpen().get(STORE_META, 'meta')
+  }
+
+  async setMeta(meta: Omit<VaultMeta, 'id'>): Promise<void> {
+    await this.ensureOpen().put(STORE_META, { id: 'meta', ...meta })
   }
 
   close() {

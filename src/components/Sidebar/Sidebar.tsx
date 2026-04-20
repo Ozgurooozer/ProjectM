@@ -1,18 +1,11 @@
 import { useEffect, useCallback } from 'react'
 import { eventBus } from '../../lib/events'
-import { selectVaultFolder, openVault, readNote, normalizeVaultPath } from '../../lib/tauri'
+import { openVault, readNote } from '../../lib/tauri'
 import { useAppStore } from '../../store/appStore'
 import { useNotificationStore } from '../../store/notificationStore'
-import { buildBacklinkIndex } from '../../lib/backlinks'
-import { buildTagIndex } from '../../lib/tags'
-import { flattenTree } from '../../lib/wikilinks'
-import { saveLastVaultPath, saveRecentNotes } from '../../lib/persistence'
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { openOrCreateDailyNote } from '../../lib/dailyNotes'
 import { pickRandomNote } from '../../lib/randomNote'
-import { VectorStore } from '../../lib/vectorStore'
-import { embeddingWorker } from '../../lib/embeddingWorkerManager'
-import { indexVault } from '../../lib/indexingPipeline'
+import { useVault } from '../../hooks/useVault'
 import { FileTree } from './FileTree'
 import { Search } from '../Search/Search'
 import { NewNoteButton } from './NewNoteButton'
@@ -22,26 +15,20 @@ import { RecentNotes } from './RecentNotes'
 import { TagPanel } from '../Tags/TagPanel'
 import { IndexingStatus } from './IndexingStatus'
 import { pluginRegistry } from '../../lib/plugins'
-import type { FileNode } from '../../types'
 
 export function Sidebar() {
   const {
     vaultPath,
     fileTree,
-    setVault,
-    setBacklinkIndex,
-    setTagIndex,
-    activeTag,
-    setActiveTag,
-    setRecentNotes,
     setActiveNote,
     refreshFileTree,
+    activeTag,
+    setActiveTag,
     activeNotePath,
     setIsRandomNote,
-    setVectorStore,
-    setIndexingProgress,
     embeddingStatus,
   } = useAppStore()
+  const { openVaultDialog } = useVault()
   const addNotification = useNotificationStore((s) => s.addNotification)
 
   const handleDailyNote = useCallback(async () => {
@@ -55,10 +42,6 @@ export function Sidebar() {
       console.error('Could not open daily note:', err)
     }
   }, [vaultPath, fileTree, refreshFileTree, setActiveNote])
-
-  useEffect(() => {
-    return eventBus.on('ui:open-daily-note', handleDailyNote)
-  }, [handleDailyNote])
 
   const handleRandomNote = useCallback(async () => {
     if (!vaultPath) return
@@ -74,78 +57,27 @@ export function Sidebar() {
     }
   }, [vaultPath, fileTree, activeNotePath, setActiveNote, setIsRandomNote])
 
-  useEffect(() => {
-    return eventBus.on('ui:open-random-note', handleRandomNote)
-  }, [handleRandomNote])
+  useEffect(() => eventBus.on('ui:open-daily-note', handleDailyNote), [handleDailyNote])
+  useEffect(() => eventBus.on('ui:open-random-note', handleRandomNote), [handleRandomNote])
 
-  function startIndexingWhenReady(tree: FileNode[], store: VectorStore) {
-    function runIndexing() {
-      setIndexingProgress({ phase: 'checking', current: 0, total: 0, message: 'Starting...' })
-      indexVault(tree, store, (p) => {
-        setIndexingProgress({
-          phase: p.phase as 'idle' | 'checking' | 'embedding' | 'done' | 'error',
-          current: p.current,
-          total: p.total,
-          message: p.message,
-        })
-      }).catch(console.warn)
-    }
-
-    if (embeddingWorker.getStatus() === 'ready') {
-      runIndexing()
-    } else {
-      const unsub = embeddingWorker.onStatusChange((s) => {
-        if (s === 'ready') { unsub(); runIndexing() }
-      })
-    }
-  }
-
-  async function handleOpenVault() {
-    const path = await selectVaultFolder()
-    if (!path) return
-
-    const normalizedPath = normalizeVaultPath(path)
-    const tree = await openVault(normalizedPath)
-    setVault(normalizedPath, tree)
-    await saveLastVaultPath(normalizedPath)
-
-    setRecentNotes([])
-    await saveRecentNotes([])
-
-    const appWindow = getCurrentWindow()
-    appWindow.setTitle(`${path.split(/[\\/]/).pop()} — Vault`)
-
-    const index = await buildBacklinkIndex(tree, readNote)
-    setBacklinkIndex(index)
-
-    const tagIdx = await buildTagIndex(flattenTree(tree), readNote)
-    setTagIndex(tagIdx)
-
-    const store = new VectorStore(normalizedPath)
-    await store.open()
-    setVectorStore(store)
-
-    startIndexingWhenReady(tree, store)
-  }
-
-  // Dot color for embedding status
   const dotClass =
-    embeddingStatus === 'ready' ? 'bg-green-500' :
+    embeddingStatus === 'ready'   ? 'bg-green-500' :
     embeddingStatus === 'loading' ? 'bg-yellow-500 animate-pulse' :
-    embeddingStatus === 'error' ? 'bg-red-500' :
+    embeddingStatus === 'error'   ? 'bg-red-500' :
     'bg-zinc-600'
 
   const dotLabel =
-    embeddingStatus === 'ready' ? 'AI ready' :
+    embeddingStatus === 'ready'   ? 'AI ready' :
     embeddingStatus === 'loading' ? 'Loading AI...' :
-    embeddingStatus === 'error' ? 'AI unavailable' :
+    embeddingStatus === 'error'   ? 'AI unavailable' :
     'AI off'
 
   return (
     <div className="flex flex-col h-full bg-zinc-900 border-r border-zinc-700">
+      {/* Vault selector */}
       <div className="p-3 border-b border-zinc-700">
         <button
-          onClick={handleOpenVault}
+          onClick={openVaultDialog}
           className="w-full text-sm bg-zinc-700 hover:bg-zinc-600 text-zinc-100 rounded px-3 py-1.5 transition-colors"
         >
           {vaultPath ? '⟳ Change Vault' : '📂 Open Vault'}
@@ -160,6 +92,7 @@ export function Sidebar() {
       <Search />
       <NewNoteButton />
       <NewFolderButton />
+
       {vaultPath && (
         <div className="px-3 pb-2 flex flex-col gap-1.5">
           <button
@@ -224,12 +157,12 @@ export function Sidebar() {
 
       <IndexingStatus />
 
-      {/* AI status indicator */}
+      {/* AI status — click to open AI Settings tab */}
       <div className="px-3 py-1.5 border-t border-zinc-800">
         <button
           onClick={() => window.dispatchEvent(new CustomEvent('open-settings-ai'))}
           className="flex items-center gap-1.5 w-full hover:opacity-80 transition-opacity"
-          title="Click to open AI settings"
+          title="Open AI settings"
         >
           <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`} />
           <span className="text-xs text-zinc-600">{dotLabel}</span>

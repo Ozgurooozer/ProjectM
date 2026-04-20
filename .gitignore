@@ -46,3 +46,9 @@ src-tauri/target
 # OS generated files
 Thumbs.db
 Desktop.ini
+
+# Bundled AI model (~22 MB binary) — run `npm run download-models` to get it
+public/models/
+
+# ONNX Runtime WASM files — copied from node_modules by build setup
+public/*.wasm

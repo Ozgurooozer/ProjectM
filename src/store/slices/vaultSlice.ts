@@ -12,11 +12,15 @@ export interface VaultSlice {
   setVectorStore: (store: VectorStore | null) => void
 }
 
-export const createVaultSlice: StateCreator<AppStore, [], [], VaultSlice> = (set) => ({
+export const createVaultSlice: StateCreator<AppStore, [], [], VaultSlice> = (set, get) => ({
   vaultPath: null,
   fileTree: [],
   vectorStore: null,
   setVault: (path, tree) => set({ vaultPath: path, fileTree: tree }),
   refreshFileTree: (tree) => set({ fileTree: tree }),
-  setVectorStore: (store) => set({ vectorStore: store }),
+  setVectorStore: (store) => {
+    // Close the previous store before replacing to release IndexedDB resources
+    get().vectorStore?.close()
+    set({ vectorStore: store })
+  },
 })
