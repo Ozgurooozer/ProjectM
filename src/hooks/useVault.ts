@@ -1,5 +1,5 @@
 import { useAppStore } from '../store/appStore'
-import { selectVaultFolder, openVault, readNote, normalizeVaultPath } from '../lib/tauri'
+import { selectVaultFolder, openVault, readNote, normalizeVaultPath, getOrCreateVaultId } from '../lib/tauri'
 import { buildBacklinkIndex } from '../lib/backlinks'
 import { buildTagIndex } from '../lib/tags'
 import { flattenTree } from '../lib/wikilinks'
@@ -62,7 +62,14 @@ export function useVault(): UseVaultReturn {
     if (!path) return
 
     const normalized = normalizeVaultPath(path)
-    const tree = await openVault(normalized)
+
+    // Same vault — no need to re-open or re-index
+    if (normalized === vaultPath) return
+
+    const [tree, vaultId] = await Promise.all([
+      openVault(normalized),
+      getOrCreateVaultId(normalized),
+    ])
     setVault(normalized, tree)
 
     // Reset vault-scoped state
@@ -83,10 +90,18 @@ export function useVault(): UseVaultReturn {
 
     eventBus.emit('vault:opened', { path: normalized })
 
-    // AI vector store — open then start indexing when model is ready
-    const store = await openVectorStore(normalized)
+    // If same vault identity (moved/renamed), reuse existing store
+    const currentStore = useAppStore.getState().vectorStore
+    if (currentStore && currentStore.vaultId === vaultId) {
+      await currentStore.setVaultPathInMeta(normalized)
+      return
+    }
+
+    // New vault — open fresh store and start indexing
+    const store = await openVectorStore(vaultId)
     setVectorStore(store)
-    // Cancel any previous indexing before starting new one
+    await store.setVaultPathInMeta(normalized)
+
     cancelIndexingRef.current?.()
     cancelIndexingRef.current = startIndexingWhenReady(
       store,

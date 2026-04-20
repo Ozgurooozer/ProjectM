@@ -23,6 +23,7 @@ pub fn run() {
             vault::open_vault,
             vault::search_vault,
             vault::propagate_rename,
+            vault::get_or_create_vault_id,
             notes::read_note,
             notes::write_note,
             notes::create_note,

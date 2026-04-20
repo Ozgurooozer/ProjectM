@@ -3,8 +3,8 @@ import { VectorStore } from './vectorStore'
 import { indexVault, type ProgressCallback } from './indexingPipeline'
 import type { FileNode } from '../types'
 
-export async function openVectorStore(vaultPath: string): Promise<VectorStore> {
-  const store = new VectorStore(vaultPath)
+export async function openVectorStore(vaultId: string): Promise<VectorStore> {
+  const store = new VectorStore(vaultId)
   await store.open()
   return store
 }

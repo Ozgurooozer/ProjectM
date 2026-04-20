@@ -1,6 +1,8 @@
 use crate::fs_utils::{collect_md_files, normalize_path, read_dir_recursive, FileNode, SearchResult};
+use crate::fs_utils::retry_operation;
 use std::fs;
 use std::path::Path;
+use uuid::Uuid;
 
 #[tauri::command]
 pub fn open_vault(path: String) -> Result<Vec<FileNode>, String> {
@@ -93,4 +95,36 @@ pub fn propagate_rename(
     }
 
     Ok(updated_files)
+}
+
+#[tauri::command]
+pub fn get_or_create_vault_id(vault_path: String) -> Result<String, String> {
+    let vault_root = Path::new(&vault_path);
+
+    let meta = retry_operation(|| fs::metadata(vault_root), 3)?;
+    if !meta.is_dir() {
+        return Err(format!("Not a directory: {}", vault_path));
+    }
+
+    let id_path = vault_root.join(".vault-id");
+
+    // Try to read existing ID
+    if retry_operation(|| fs::metadata(&id_path), 3).is_ok() {
+        let existing = retry_operation(|| fs::read_to_string(&id_path), 3)?;
+        let trimmed = existing.trim();
+
+        if let Ok(parsed) = Uuid::parse_str(trimmed) {
+            return Ok(parsed.to_string());
+        }
+
+        // File exists but content is invalid — overwrite with new UUID
+        let new_id = Uuid::new_v4().to_string();
+        retry_operation(|| fs::write(&id_path, format!("{new_id}\n")), 3)?;
+        return Ok(new_id);
+    }
+
+    // No .vault-id yet — create one
+    let new_id = Uuid::new_v4().to_string();
+    retry_operation(|| fs::write(&id_path, format!("{new_id}\n")), 3)?;
+    Ok(new_id)
 }

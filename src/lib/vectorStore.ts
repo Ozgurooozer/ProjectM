@@ -43,14 +43,13 @@ const DB_VERSION = 2   // bumped from 1 to trigger upgrade
 const STORE_CHUNKS = 'note_chunks'
 const STORE_META = 'vault_meta'
 
-function vaultPathToDbName(vaultPath: string): string {
-  return `vault_index_${vaultPath
-    .replace(/[^a-zA-Z0-9]/g, '_')
-    .slice(-60)}`
+function vaultIdToDbName(vaultId: string): string {
+  const safe = vaultId.replace(/[^a-zA-Z0-9_-]/g, '_')
+  return `vault_index_${safe}`
 }
 
-async function openVaultDB(vaultPath: string): Promise<IDBPDatabase> {
-  const dbName = vaultPathToDbName(vaultPath)
+async function openVaultDB(vaultId: string): Promise<IDBPDatabase> {
+  const dbName = vaultIdToDbName(vaultId)
 
   return openDB(dbName, DB_VERSION, {
     upgrade(db, oldVersion) {
@@ -78,14 +77,14 @@ async function openVaultDB(vaultPath: string): Promise<IDBPDatabase> {
 
 export class VectorStore {
   private db: IDBPDatabase | null = null
-  private vaultPath: string
+  public readonly vaultId: string
 
-  constructor(vaultPath: string) {
-    this.vaultPath = vaultPath
+  constructor(vaultId: string) {
+    this.vaultId = vaultId
   }
 
   async open(): Promise<void> {
-    this.db = await openVaultDB(this.vaultPath)
+    this.db = await openVaultDB(this.vaultId)
   }
 
   private ensureOpen(): IDBPDatabase {
@@ -242,6 +241,16 @@ export class VectorStore {
 
   async setMeta(meta: Omit<VaultMeta, 'id'>): Promise<void> {
     await this.ensureOpen().put(STORE_META, { id: 'meta', ...meta })
+  }
+
+  /** Update the vaultPath recorded in meta (called after vault move/rename) */
+  async setVaultPathInMeta(vaultPath: string): Promise<void> {
+    const existing = await this.getMeta()
+    await this.ensureOpen().put(STORE_META, {
+      ...(existing ?? { modelVersion: 'bge-micro-v2', totalNotes: 0, lastFullIndex: 0 }),
+      id: 'meta',
+      vaultPath,
+    })
   }
 
   close() {

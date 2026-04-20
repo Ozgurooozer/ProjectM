@@ -31,6 +31,7 @@ import { pluginRegistry } from './lib/plugins'
 import { commandRegistry } from './lib/commands'
 import { embeddingWorker } from './lib/embeddingWorkerManager'
 import { openVectorStore, startIndexingWhenReady } from './lib/vaultSetup'
+import { getOrCreateVaultId } from './lib/tauri'
 import { useSimilarNotes } from './hooks/useSimilarNotes'
 import { openOrCreateDailyNote } from './lib/dailyNotes'
 import { pickRandomNote } from './lib/randomNote'
@@ -144,8 +145,10 @@ function AppContent() {
         setBacklinkIndex(backlinkIdx)
         setTagIndex(tagIdx)
 
-        const store = await openVectorStore(lastPath)
+        const vaultId = await getOrCreateVaultId(lastPath)
+        const store = await openVectorStore(vaultId)
         setVectorStore(store)
+        await store.setVaultPathInMeta(lastPath)
         // startup'ta tek seferlik — cleanup gerekmez
         startIndexingWhenReady(
           store,

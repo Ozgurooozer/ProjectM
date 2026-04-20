@@ -37,6 +37,11 @@ export async function openVault(path: string): Promise<FileNode[]> {
   return tree.map(normalizeNode)
 }
 
+/** Get or create a stable UUID for the vault (stored in <vault>/.vault-id) */
+export async function getOrCreateVaultId(vaultPath: string): Promise<string> {
+  return invoke<string>('get_or_create_vault_id', { vault_path: vaultPath })
+}
+
 export async function readNote(path: string): Promise<string> {
   return invoke<string>('read_note', { path })
 }
