@@ -475,3 +475,158 @@ pub fn vector_set_meta(
 
     tx.commit().map_err(|e| format!("commit meta: {e}"))
 }
+
+// ── Backlink index persist ────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacklinkRow {
+    pub source_path: String,
+    pub target_path: String,
+    pub snippet: String,
+}
+
+/// Replace all backlinks for a given source note (called after note save).
+#[tauri::command]
+pub fn backlinks_set_for_note(
+    source_path: String,
+    entries: Vec<BacklinkRow>,
+    state: State<'_, VectorStoreState>,
+) -> Result<(), String> {
+    let mut guard = state.conn.lock()
+        .map_err(|e| format!("mutex poison: {e}"))?;
+    let conn = guard.as_mut().ok_or("vector store not open")?;
+
+    let tx = conn.transaction()
+        .map_err(|e| format!("begin backlinks tx: {e}"))?;
+
+    tx.execute("DELETE FROM backlinks WHERE source_path = ?1", params![source_path])
+        .map_err(|e| format!("delete backlinks: {e}"))?;
+
+    for entry in &entries {
+        tx.execute(
+            "INSERT OR REPLACE INTO backlinks (source_path, target_path, snippet)
+             VALUES (?1, ?2, ?3)",
+            params![entry.source_path, entry.target_path, entry.snippet],
+        )
+        .map_err(|e| format!("insert backlink: {e}"))?;
+    }
+
+    tx.commit().map_err(|e| format!("commit backlinks: {e}"))
+}
+
+/// Return all backlinks pointing TO a given target note.
+#[tauri::command]
+pub fn backlinks_get_for_target(
+    target_path: String,
+    state: State<'_, VectorStoreState>,
+) -> Result<Vec<BacklinkRow>, String> {
+    let guard = state.conn.lock()
+        .map_err(|e| format!("mutex poison: {e}"))?;
+    let conn = guard.as_ref().ok_or("vector store not open")?;
+
+    let mut stmt = conn.prepare(
+        "SELECT source_path, target_path, snippet FROM backlinks
+         WHERE target_path = ?1",
+    ).map_err(|e| format!("prepare backlinks: {e}"))?;
+
+    let rows: Result<Vec<BacklinkRow>, _> = stmt
+        .query_map(params![target_path], |row| {
+            Ok(BacklinkRow {
+                source_path: row.get(0)?,
+                target_path: row.get(1)?,
+                snippet: row.get(2)?,
+            })
+        })
+        .map_err(|e| format!("query backlinks: {e}"))?
+        .collect();
+    rows.map_err(|e| format!("read backlinks: {e}"))
+}
+
+/// Return all backlinks as a flat list (for loading full index on vault open).
+#[tauri::command]
+pub fn backlinks_get_all(
+    state: State<'_, VectorStoreState>,
+) -> Result<Vec<BacklinkRow>, String> {
+    let guard = state.conn.lock()
+        .map_err(|e| format!("mutex poison: {e}"))?;
+    let conn = guard.as_ref().ok_or("vector store not open")?;
+
+    let mut stmt = conn.prepare(
+        "SELECT source_path, target_path, snippet FROM backlinks",
+    ).map_err(|e| format!("prepare all backlinks: {e}"))?;
+
+    let rows: Result<Vec<BacklinkRow>, _> = stmt
+        .query_map([], |row| {
+            Ok(BacklinkRow {
+                source_path: row.get(0)?,
+                target_path: row.get(1)?,
+                snippet: row.get(2)?,
+            })
+        })
+        .map_err(|e| format!("query all backlinks: {e}"))?
+        .collect();
+    rows.map_err(|e| format!("read all backlinks: {e}"))
+}
+
+// ── Tag index persist ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagRow {
+    pub tag: String,
+    pub note_path: String,
+}
+
+/// Replace all tags for a given note (called after note save).
+#[tauri::command]
+pub fn tags_set_for_note(
+    note_path: String,
+    tags: Vec<String>,
+    state: State<'_, VectorStoreState>,
+) -> Result<(), String> {
+    let mut guard = state.conn.lock()
+        .map_err(|e| format!("mutex poison: {e}"))?;
+    let conn = guard.as_mut().ok_or("vector store not open")?;
+
+    let tx = conn.transaction()
+        .map_err(|e| format!("begin tags tx: {e}"))?;
+
+    tx.execute("DELETE FROM tags WHERE note_path = ?1", params![note_path])
+        .map_err(|e| format!("delete tags: {e}"))?;
+
+    for tag in &tags {
+        tx.execute(
+            "INSERT OR REPLACE INTO tags (tag, note_path) VALUES (?1, ?2)",
+            params![tag, note_path],
+        )
+        .map_err(|e| format!("insert tag: {e}"))?;
+    }
+
+    tx.commit().map_err(|e| format!("commit tags: {e}"))
+}
+
+/// Return all tags as a flat list (for loading full index on vault open).
+#[tauri::command]
+pub fn tags_get_all(
+    state: State<'_, VectorStoreState>,
+) -> Result<Vec<TagRow>, String> {
+    let guard = state.conn.lock()
+        .map_err(|e| format!("mutex poison: {e}"))?;
+    let conn = guard.as_ref().ok_or("vector store not open")?;
+
+    let mut stmt = conn.prepare(
+        "SELECT tag, note_path FROM tags ORDER BY tag ASC",
+    ).map_err(|e| format!("prepare all tags: {e}"))?;
+
+    let rows: Result<Vec<TagRow>, _> = stmt
+        .query_map([], |row| {
+            Ok(TagRow {
+                tag: row.get(0)?,
+                note_path: row.get(1)?,
+            })
+        })
+        .map_err(|e| format!("query all tags: {e}"))?
+        .collect();
+    rows.map_err(|e| format!("read all tags: {e}"))
+}

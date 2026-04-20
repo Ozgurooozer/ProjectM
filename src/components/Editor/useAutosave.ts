@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react'
-import { writeNote, saveSnapshot } from '../../lib/tauri'
+import { writeNote, saveSnapshot, backlinksSetForNote, tagsSetForNote } from '../../lib/tauri'
 import { useAppStore } from '../../store/appStore'
 import { updateBacklinkIndex } from '../../lib/backlinks'
 import { flattenTree } from '../../lib/wikilinks'
-import { updateTagIndex } from '../../lib/tags'
+import { updateTagIndex, extractTags } from '../../lib/tags'
 import { indexSingleNote } from '../../lib/indexingPipeline'
 import { embeddingWorker } from '../../lib/embeddingWorkerManager'
+import type { BacklinkEntry } from '../../types'
 
 const AUTOSAVE_DELAY = 1000
 
@@ -46,8 +47,20 @@ export function useAutosave() {
 
         const { backlinkIndex, fileTree, setBacklinkIndex, tagIndex, setTagIndex, vectorStore } = useAppStore.getState()
         const allPaths = flattenTree(fileTree)
-        setBacklinkIndex(updateBacklinkIndex(backlinkIndex, activeNotePath, noteContent, allPaths))
-        setTagIndex(updateTagIndex(tagIndex, activeNotePath, noteContent))
+        const newBacklinks = updateBacklinkIndex(backlinkIndex, activeNotePath, noteContent, allPaths)
+        const newTags = updateTagIndex(tagIndex, activeNotePath, noteContent)
+        setBacklinkIndex(newBacklinks)
+        setTagIndex(newTags)
+
+        // Persist updated backlinks for this note to SQLite (fire-and-forget)
+        const outgoingBacklinks = Object.entries(newBacklinks)
+          .flatMap(([targetPath, entries]) =>
+            entries
+              .filter((e: BacklinkEntry) => e.sourcePath === activeNotePath)
+              .map((e: BacklinkEntry) => ({ sourcePath: e.sourcePath, targetPath, snippet: e.snippet }))
+          )
+        backlinksSetForNote(activeNotePath, outgoingBacklinks).catch(console.warn)
+        tagsSetForNote(activeNotePath, extractTags(noteContent)).catch(console.warn)
 
         if (vectorStore && embeddingWorker.getStatus() === 'ready') {
           indexSingleNote(activeNotePath, noteContent, vectorStore).catch((err) => {

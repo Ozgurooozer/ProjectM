@@ -206,3 +206,38 @@ export async function vectorGetMeta(): Promise<VaultMetaRowWire | null> {
 export async function vectorSetMeta(meta: VaultMetaRowWire): Promise<void> {
   return invoke<void>('vector_set_meta', { meta })
 }
+
+// ---- Backlink + Tag Index Persist ----
+
+export interface BacklinkRowWire {
+  sourcePath: string
+  targetPath: string
+  snippet: string
+}
+
+export interface TagRowWire {
+  tag: string
+  notePath: string
+}
+
+export async function backlinksSetForNote(
+  sourcePath: string,
+  entries: BacklinkRowWire[]
+): Promise<void> {
+  return invoke<void>('backlinks_set_for_note', { sourcePath, entries })
+}
+
+export async function backlinksGetAll(): Promise<BacklinkRowWire[]> {
+  return invoke<BacklinkRowWire[]>('backlinks_get_all')
+}
+
+export async function tagsSetForNote(
+  notePath: string,
+  tags: string[]
+): Promise<void> {
+  return invoke<void>('tags_set_for_note', { notePath, tags })
+}
+
+export async function tagsGetAll(): Promise<TagRowWire[]> {
+  return invoke<TagRowWire[]>('tags_get_all')
+}

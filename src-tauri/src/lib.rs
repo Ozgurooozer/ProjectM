@@ -55,6 +55,11 @@ pub fn run() {
             vector_store::vector_find_deleted_notes,
             vector_store::vector_get_meta,
             vector_store::vector_set_meta,
+            vector_store::backlinks_set_for_note,
+            vector_store::backlinks_get_for_target,
+            vector_store::backlinks_get_all,
+            vector_store::tags_set_for_note,
+            vector_store::tags_get_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
