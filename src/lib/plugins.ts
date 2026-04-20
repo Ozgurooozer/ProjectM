@@ -79,7 +79,7 @@ class PluginRegistry {
       registerSidebarPanel: (panel) => this.sidebarPanels.push(panel),
       registerContextMenuItem: (item) => this.contextMenuItems.push(item),
       registerCommand: (cmd) => this.commands.push(cmd),
-      log: (msg) => console.log(`[Plugin:${pluginId}] ${msg}`),
+      log: (msg) => console.warn(`[Plugin:${pluginId}] ${msg}`),
     }
   }
 

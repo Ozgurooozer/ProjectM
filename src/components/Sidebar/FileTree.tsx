@@ -249,7 +249,6 @@ export const FileTree = React.memo(function FileTree({ nodes, depth, onError }: 
                 .then((tree) => refreshFileTree(tree))
                 .then(() => {
                   setCutPath(null)
-                  console.log('Item moved successfully')
                 })
                 .catch((err) => console.error('Paste failed:', err))
             }
