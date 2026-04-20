@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { useAppStore } from '../../store/appStore'
 import { readNote } from '../../lib/tauri'
 import { useResolvedPreview } from '../../hooks/useResolvedPreview'
+import { openUrl } from '@tauri-apps/plugin-opener'
 
 const MermaidBlock = lazy(() =>
   import('./MermaidBlock').then((m) => ({ default: m.MermaidBlock }))
@@ -50,16 +51,35 @@ export function Preview() {
   }, [html, mermaidBlocks])
 
   async function handleClick(e: React.MouseEvent<HTMLDivElement>) {
-    const anchor = (e.target as HTMLElement).closest('a[data-wiki-path]') as HTMLAnchorElement | null
+    const target = e.target as HTMLElement
+    const anchor = target.closest('a') as HTMLAnchorElement | null
     if (!anchor) return
-    e.preventDefault()
-    const path = anchor.getAttribute('data-wiki-path')
-    if (!path) return
-    try {
-      const content = await readNote(path)
-      setActiveNote(path, content)
-    } catch (err) {
-      console.error('Could not open wiki-link:', err)
+
+    // Wiki-link navigation
+    const wikiPath = anchor.getAttribute('data-wiki-path')
+    if (wikiPath) {
+      e.preventDefault()
+      try {
+        const content = await readNote(wikiPath)
+        setActiveNote(wikiPath, content)
+      } catch (err) {
+        console.error('Could not open wiki-link:', err)
+      }
+      return
+    }
+
+    // External link guard — open in system browser
+    const href = anchor.getAttribute('href')
+    if (href) {
+      const isExternal = /^https?:\/\//.test(href) || /^mailto:/.test(href) || /^tel:/.test(href)
+      if (isExternal) {
+        e.preventDefault()
+        try {
+          await openUrl(href)
+        } catch (err) {
+          console.error('Could not open external link:', err)
+        }
+      }
     }
   }
 

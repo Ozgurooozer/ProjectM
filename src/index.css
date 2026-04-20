@@ -250,3 +250,39 @@ body.ctrl-held .cm-wikilink {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* ── Desktop battery: selection behavior ─────────────────────────────────── */
+/* Disable accidental text selection on desktop UI surfaces */
+body {
+  user-select: none;
+}
+
+/* Keep editing and code surfaces selectable */
+input,
+textarea,
+[contenteditable="true"],
+pre,
+code,
+.cm-editor,
+.cm-content {
+  user-select: text;
+}
+
+/* Opt-in class for any surface that should behave like regular text */
+.ui-selectable {
+  user-select: text;
+}
+
+/* ── Desktop battery: overscroll / rubber-band prevention ────────────────── */
+html,
+body {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+}
