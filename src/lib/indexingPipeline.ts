@@ -3,7 +3,7 @@ import { type VectorStore, type ChunkVector } from './vectorStore'
 import { hashContent } from './contentHash'
 import { preprocessForEmbedding, extractSnippet } from './textPreprocessor'
 import { chunkMarkdownText } from './textChunker'
-import { flattenTree } from './wikilinks'
+import { flattenTree, pathToTitle } from './wikilinks'
 import { readNote } from './tauri'
 import type { FileNode } from '../types'
 
@@ -39,7 +39,7 @@ async function readAndPrepare(path: string): Promise<{
     const cleanText = preprocessForEmbedding(path, raw)
     const hash = hashContent(raw)
     const snippet = extractSnippet(raw)
-    const title = path.split(/[\\/]/).pop()?.replace(/\.md$/, '') ?? ''
+    const title = pathToTitle(path)
     return { raw, cleanText, hash, snippet, title }
   } catch {
     return null
@@ -214,7 +214,7 @@ export async function indexSingleNote(
 
   const cleanText = preprocessForEmbedding(notePath, noteContent)
   const snippet = extractSnippet(noteContent)
-  const title = notePath.split(/[\\/]/).pop()?.replace(/\.md$/, '') ?? ''
+  const title = pathToTitle(notePath)
 
   await indexNoteChunks(notePath, cleanText, hash, snippet, title, vectorStore)
 }

@@ -5,7 +5,7 @@ import {
 } from '@codemirror/autocomplete'
 import type { EditorView } from '@codemirror/view'
 import type { Completion } from '@codemirror/autocomplete'
-import { flattenTree } from './wikilinks'
+import { flattenTree, pathToTitle } from './wikilinks'
 import type { FileNode } from '../types'
 
 export function wikiLinkCompletion(fileTree: FileNode[]) {
@@ -14,7 +14,7 @@ export function wikiLinkCompletion(fileTree: FileNode[]) {
   // Deduplicate: prefer shorter path when names clash
   const nameToPath = new Map<string, string>()
   for (const p of allPaths) {
-    const name = p.split('/').pop()?.replace(/\.md$/, '') ?? ''
+    const name = pathToTitle(p)
     if (!name) continue
     const existing = nameToPath.get(name.toLowerCase())
     if (!existing || p.length < existing.length) {

@@ -1,6 +1,7 @@
 import { useAppStore } from '../store/appStore'
 import { readNote, writeNote } from '../lib/tauri'
 import { eventBus } from '../lib/events'
+import { pathToTitle } from '../lib/wikilinks'
 
 export interface UseNoteReturn {
   activeNotePath: string | null
@@ -30,9 +31,7 @@ export function useNote(): UseNoteReturn {
     toggleReadingMode,
   } = useAppStore()
 
-  const noteName = activeNotePath
-    ? (activeNotePath.split(/[\\/]/).pop()?.replace(/\.md$/, '') ?? '')
-    : ''
+  const noteName = activeNotePath ? pathToTitle(activeNotePath) : ''
 
   const wordCount = noteContent.trim() ? noteContent.trim().split(/\s+/).length : 0
 

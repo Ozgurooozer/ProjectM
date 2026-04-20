@@ -8,6 +8,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { eventBus } from '../lib/events'
 import { openVectorStore, startIndexingWhenReady } from '../lib/vaultSetup'
 import type { IndexingProgress } from '../lib/indexingPipeline'
+import { useRef } from 'react'
 
 export interface UseVaultReturn {
   vaultPath: string | null
@@ -39,6 +40,8 @@ export function useVault(): UseVaultReturn {
     setIndexingProgress,
     setRecentNotes,
   } = useAppStore()
+
+  const cancelIndexingRef = useRef<(() => void) | null>(null)
 
   const vaultName = vaultPath ? (vaultPath.split(/[\\/]/).pop() ?? '') : ''
 
@@ -83,7 +86,9 @@ export function useVault(): UseVaultReturn {
     // AI vector store — open then start indexing when model is ready
     const store = await openVectorStore(normalized)
     setVectorStore(store)
-    startIndexingWhenReady(
+    // Cancel any previous indexing before starting new one
+    cancelIndexingRef.current?.()
+    cancelIndexingRef.current = startIndexingWhenReady(
       store,
       () => useAppStore.getState().fileTree,
       (p) => setIndexingProgress(progressToStore(p))

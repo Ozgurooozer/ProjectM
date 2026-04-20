@@ -146,6 +146,7 @@ function AppContent() {
 
         const store = await openVectorStore(lastPath)
         setVectorStore(store)
+        // startup'ta tek seferlik — cleanup gerekmez
         startIndexingWhenReady(
           store,
           () => useAppStore.getState().fileTree,

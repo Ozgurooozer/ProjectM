@@ -5,6 +5,11 @@ export function normalizePath(p: string): string {
   return p.replace(/\\/g, '/')
 }
 
+/** Extract note title from a file path: "foo/bar/My Note.md" → "My Note" */
+export function pathToTitle(path: string): string {
+  return path.split(/[\\/]/).pop()?.replace(/\.md$/, '') ?? ''
+}
+
 export interface WikiLink {
   raw: string
   target: string

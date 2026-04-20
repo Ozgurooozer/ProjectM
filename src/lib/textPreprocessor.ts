@@ -1,4 +1,5 @@
 import { parseFrontmatter } from './frontmatter'
+import { pathToTitle } from './wikilinks'
 
 const MAX_CHARS = 2000
 
@@ -6,10 +7,7 @@ export function preprocessForEmbedding(
   notePath: string,
   rawContent: string
 ): string {
-  const title = notePath
-    .split(/[\\/]/)
-    .pop()
-    ?.replace(/\.md$/, '') ?? ''
+  const title = pathToTitle(notePath)
 
   const { body, frontmatter } = parseFrontmatter(rawContent)
 

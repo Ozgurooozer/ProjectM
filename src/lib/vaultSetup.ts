@@ -9,25 +9,33 @@ export async function openVectorStore(vaultPath: string): Promise<VectorStore> {
   return store
 }
 
-// Start indexing once the model is ready. getFileTree is called lazily so it
-// reads the current tree at the moment indexing begins (not when this is called).
+// Start indexing once the model is ready. Returns a cancel function.
+// getFileTree is called lazily so it reads the current tree at the moment
+// indexing begins (not when this is called).
 export function startIndexingWhenReady(
   store: VectorStore,
   getFileTree: () => FileNode[],
   onProgress: ProgressCallback
-): void {
+): () => void {
+  const controller = new AbortController()
+
   function run() {
-    indexVault(getFileTree(), store, onProgress).catch(console.warn)
+    if (controller.signal.aborted) return
+    indexVault(getFileTree(), store, onProgress, controller.signal).catch((err) => {
+      if (!controller.signal.aborted) console.warn('Indexing failed:', err)
+    })
   }
 
   const status = embeddingWorker.getStatus()
   if (status === 'ready') {
     run()
-    return
+    return () => controller.abort()
   }
-  if (status === 'error') return
+  if (status === 'error') return () => {}
 
   const unsub = embeddingWorker.onStatusChange((s) => {
     if (s === 'ready') { unsub(); run() }
   })
+
+  return () => { controller.abort(); unsub() }
 }

@@ -13,8 +13,16 @@ export function AIStatusPanel() {
   } = useAppStore()
 
   const [indexCount, setIndexCount] = useState(0)
-  const [lastIndexed, setLastIndexed] = useState<string | null>(null)
+  const [lastIndexed, setLastIndexed] = useState<number | null>(null)
   const [reindexing, setReindexing] = useState(false)
+
+  function formatRelativeTime(ts: number): string {
+    const diff = Math.floor((Date.now() - ts) / 1000)
+    if (diff < 60) return 'just now'
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+    return `${Math.floor(diff / 86400)}d ago`
+  }
 
   useEffect(() => {
     if (!vectorStore) return
@@ -22,7 +30,7 @@ export function AIStatusPanel() {
     vectorStore.count().then(setIndexCount)
     vectorStore.getMeta().then((meta) => {
       if (meta?.lastFullIndex) {
-        setLastIndexed(new Date(meta.lastFullIndex).toLocaleString())
+        setLastIndexed(meta.lastFullIndex)
       }
     })
   }, [vectorStore, indexingProgress.phase])
@@ -126,8 +134,8 @@ export function AIStatusPanel() {
           {lastIndexed && (
             <div className="flex justify-between">
               <span className="text-zinc-600">Last indexed</span>
-              <span className="text-zinc-400 text-right max-w-[120px] truncate">
-                {lastIndexed}
+              <span className="text-zinc-400" title={new Date(lastIndexed).toLocaleString()}>
+                {formatRelativeTime(lastIndexed)}
               </span>
             </div>
           )}

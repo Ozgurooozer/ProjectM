@@ -1,4 +1,5 @@
 import type { BacklinkEntry } from '../types'
+import { pathToTitle } from './wikilinks'
 
 export interface GraphNode {
   id: string
@@ -26,7 +27,7 @@ export function buildGraphData(
     if (!nodeMap.has(targetPath)) {
       nodeMap.set(targetPath, {
         id: targetPath,
-        name: targetPath.split(/[\\/]/).pop()?.replace(/\.md$/, '') ?? targetPath,
+        name: pathToTitle(targetPath) || targetPath,
         linkCount: 0,
       })
     }
@@ -35,7 +36,7 @@ export function buildGraphData(
       if (!nodeMap.has(entry.sourcePath)) {
         nodeMap.set(entry.sourcePath, {
           id: entry.sourcePath,
-          name: entry.sourcePath.split(/[\\/]/).pop()?.replace(/\.md$/, '') ?? entry.sourcePath,
+          name: pathToTitle(entry.sourcePath) || entry.sourcePath,
           linkCount: 0,
         })
       }
