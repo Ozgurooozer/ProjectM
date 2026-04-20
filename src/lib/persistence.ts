@@ -98,3 +98,38 @@ export async function loadAiSearchEnabled(): Promise<boolean> {
   const value = await s.get<boolean>(KEY_AI_SEARCH)
   return value ?? true
 }
+
+// ── Layout state ──────────────────────────────────────────────────────────────
+
+const KEY_LAYOUT = 'layoutState'
+
+export interface LayoutState {
+  leftPanelWidth: number   // px, default 240
+  rightPanelWidth: number  // px, default 256
+  leftPanelOpen: boolean
+  rightPanelOpen: boolean
+  leftPanelId: string
+  rightPanelId: string
+}
+
+const DEFAULT_LAYOUT: LayoutState = {
+  leftPanelWidth: 240,
+  rightPanelWidth: 256,
+  leftPanelOpen: true,
+  rightPanelOpen: true,
+  leftPanelId: 'files',
+  rightPanelId: 'backlinks',
+}
+
+export async function saveLayoutState(state: Partial<LayoutState>): Promise<void> {
+  const s = await getStore()
+  const current = await s.get<LayoutState>(KEY_LAYOUT) ?? DEFAULT_LAYOUT
+  await s.set(KEY_LAYOUT, { ...current, ...state })
+  await s.save()
+}
+
+export async function loadLayoutState(): Promise<LayoutState> {
+  const s = await getStore()
+  const value = await s.get<LayoutState>(KEY_LAYOUT)
+  return value ?? DEFAULT_LAYOUT
+}

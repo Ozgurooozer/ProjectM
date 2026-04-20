@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import './index.css'
 import {
   loadLastVaultPath, loadLastNotePath,
   loadSettings, loadPinnedNotes, loadRecentNotes,
+  loadLayoutState, saveLayoutState,
 } from './lib/persistence'
 import { openVault, readNote } from './lib/tauri'
 import { buildBacklinkIndex } from './lib/backlinks'
@@ -54,6 +55,10 @@ function AppContent() {
   const [showPreview, setShowPreview] = useState(true)
   const [showQuickSwitcher, setShowQuickSwitcher] = useState(false)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
+  const [leftPanelWidth, setLeftPanelWidth] = useState(240)
+  const [rightPanelWidth, setRightPanelWidth] = useState(256)
+  const isResizingLeft = useRef(false)
+  const isResizingRight = useRef(false)
 
   useSimilarNotes()
 
@@ -191,6 +196,48 @@ function AppContent() {
     restoreNavigation()
   }, [])
 
+  // ── Layout restore ─────────────────────────────────────────
+  useEffect(() => {
+    loadLayoutState().then((layout) => {
+      setLeftPanelWidth(layout.leftPanelWidth)
+      setRightPanelWidth(layout.rightPanelWidth)
+    })
+  }, [])
+
+  // ── Panel resize mouse handlers ────────────────────────────
+  useEffect(() => {
+    function onMouseMove(e: MouseEvent) {
+      if (isResizingLeft.current) {
+        const w = Math.min(400, Math.max(160, e.clientX - 48)) // 48 = activity bar
+        setLeftPanelWidth(w)
+      }
+      if (isResizingRight.current) {
+        const w = Math.min(500, Math.max(200, window.innerWidth - e.clientX - 48))
+        setRightPanelWidth(w)
+      }
+    }
+    function onMouseUp() {
+      if (isResizingLeft.current) {
+        isResizingLeft.current = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+        setLeftPanelWidth((w) => { void saveLayoutState({ leftPanelWidth: w }); return w })
+      }
+      if (isResizingRight.current) {
+        isResizingRight.current = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+        setRightPanelWidth((w) => { void saveLayoutState({ rightPanelWidth: w }); return w })
+      }
+    }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [])
+
   // ── Theme ──────────────────────────────────────────────────
   useEffect(() => {
     document.documentElement.classList.toggle('light-theme', settings.theme === 'light')
@@ -269,10 +316,22 @@ function AppContent() {
         {/* Left activity bar */}
         <ActivityBar onOpenSettings={() => { setSettingsInitialTab('general'); setShowSettings(true) }} />
 
-        {/* Left panel (collapsible) */}
+        {/* Left panel (collapsible + resizable) */}
         {leftPanelOpen && (
-          <div className="w-60 shrink-0 h-full border-r border-zinc-800 bg-zinc-900 overflow-hidden flex flex-col">
+          <div
+            style={{ width: leftPanelWidth }}
+            className="shrink-0 h-full bg-zinc-900 overflow-hidden flex flex-col relative"
+          >
             <LeftPanel />
+            {/* Resize sash */}
+            <div
+              className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-violet-500 transition-colors z-10"
+              onMouseDown={() => {
+                isResizingLeft.current = true
+                document.body.style.cursor = 'col-resize'
+                document.body.style.userSelect = 'none'
+              }}
+            />
           </div>
         )}
 
@@ -290,9 +349,21 @@ function AppContent() {
           )}
         </div>
 
-        {/* Right panel (collapsible) */}
+        {/* Right panel (collapsible + resizable) */}
         {rightPanelOpen && (
-          <div className="w-64 shrink-0 h-full border-l border-zinc-800 bg-zinc-900 overflow-hidden flex flex-col">
+          <div
+            style={{ width: rightPanelWidth }}
+            className="shrink-0 h-full bg-zinc-900 overflow-hidden flex flex-col relative"
+          >
+            {/* Resize sash */}
+            <div
+              className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-violet-500 transition-colors z-10"
+              onMouseDown={() => {
+                isResizingRight.current = true
+                document.body.style.cursor = 'col-resize'
+                document.body.style.userSelect = 'none'
+              }}
+            />
             <RightPanel />
           </div>
         )}
