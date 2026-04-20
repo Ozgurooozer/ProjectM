@@ -98,7 +98,7 @@ export function useVault(): UseVaultReturn {
     }
 
     // New vault — open fresh store and start indexing
-    const store = await openVectorStore(vaultId)
+    const store = await openVectorStore(vaultId, normalized)
     setVectorStore(store)
     await store.setVaultPathInMeta(normalized)
 

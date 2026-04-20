@@ -1,24 +1,46 @@
-import { openDB, type IDBPDatabase } from 'idb'
+// src/lib/vectorStore.ts
+//
+// VectorStore — same public interface as the IndexedDB version.
+// Internally delegates to Rust SQLite via invoke() wrappers.
+//
+// vector field stays number[] (384 floats) externally;
+// base64 conversion happens here, invisibly to callers.
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+import {
+  type ChunkRowWire,
+  type NoteHashWire,
+  type VaultMetaRowWire,
+  vectorStoreOpen,
+  vectorStoreClose,
+  vectorUpsertChunks,
+  vectorDeleteChunksForNote,
+  vectorGetChunksForNote,
+  vectorGetAllChunks,
+  vectorClearAll,
+  vectorCount,
+  vectorFindStaleNotes,
+  vectorFindDeletedNotes,
+  vectorGetMeta,
+  vectorSetMeta,
+} from './tauri'
 
-/** One vector per chunk (not per note) */
+// ── Public domain types (unchanged interface) ─────────────────────────────────
+
 export interface ChunkVector {
-  /** Composite key: "notePath::chunkIndex" */
   id: string
   notePath: string
   chunkIndex: number
-  contentHash: string   // hash of the full note (for stale detection)
-  vector: number[]
-  title: string         // note title
-  snippet: string       // first 200 chars of note
-  headingPath: string   // e.g. "Installation > Requirements"
+  contentHash: string
+  vector: number[]   // 384 floats — always number[] externally
+  title: string
+  snippet: string
+  headingPath: string
   startOffset: number
   endOffset: number
   indexedAt: number
 }
 
-/** Legacy — kept for backward compat, not used for new indexing */
+/** Legacy — kept for backward compat */
 export interface NoteVector {
   path: string
   contentHash: string
@@ -37,144 +59,178 @@ export interface VaultMeta {
   lastFullIndex: number
 }
 
-// ── DB setup ──────────────────────────────────────────────────────────────────
+// ── Vector serialization (private) ───────────────────────────────────────────
 
-const DB_VERSION = 2   // bumped from 1 to trigger upgrade
-const STORE_CHUNKS = 'note_chunks'
-const STORE_META = 'vault_meta'
-
-function vaultIdToDbName(vaultId: string): string {
-  const safe = vaultId.replace(/[^a-zA-Z0-9_-]/g, '_')
-  return `vault_index_${safe}`
+function vectorToBase64(v: number[]): string {
+  const buf = new ArrayBuffer(v.length * 4)
+  const view = new DataView(buf)
+  v.forEach((f, i) => view.setFloat32(i * 4, f, /* littleEndian= */ true))
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
 }
 
-async function openVaultDB(vaultId: string): Promise<IDBPDatabase> {
-  const dbName = vaultIdToDbName(vaultId)
+function base64ToVector(b64: string): number[] {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  const view = new DataView(bytes.buffer)
+  return Array.from(
+    { length: bytes.length / 4 },
+    (_, i) => view.getFloat32(i * 4, /* littleEndian= */ true),
+  )
+}
 
-  return openDB(dbName, DB_VERSION, {
-    upgrade(db, oldVersion) {
-      // Remove old stores from v1
-      if (oldVersion < 2) {
-        if (db.objectStoreNames.contains('note_vectors')) {
-          db.deleteObjectStore('note_vectors')
-        }
-      }
+// ── Domain ↔ wire converters ──────────────────────────────────────────────────
 
-      if (!db.objectStoreNames.contains(STORE_CHUNKS)) {
-        const store = db.createObjectStore(STORE_CHUNKS, { keyPath: 'id' })
-        // Index by notePath for efficient per-note operations
-        store.createIndex('by_notePath', 'notePath', { unique: false })
-      }
+function chunkToWire(chunk: ChunkVector): ChunkRowWire {
+  return {
+    id: chunk.id,
+    notePath: chunk.notePath,
+    chunkIndex: chunk.chunkIndex,
+    contentHash: chunk.contentHash,
+    vector: vectorToBase64(chunk.vector),
+    title: chunk.title,
+    snippet: chunk.snippet,
+    headingPath: chunk.headingPath,
+    startOffset: chunk.startOffset,
+    endOffset: chunk.endOffset,
+    indexedAt: chunk.indexedAt,
+  }
+}
 
-      if (!db.objectStoreNames.contains(STORE_META)) {
-        db.createObjectStore(STORE_META, { keyPath: 'id' })
-      }
-    },
-  })
+function wireToChunk(wire: ChunkRowWire): ChunkVector {
+  return {
+    id: wire.id,
+    notePath: wire.notePath,
+    chunkIndex: wire.chunkIndex,
+    contentHash: wire.contentHash,
+    vector: base64ToVector(wire.vector),
+    title: wire.title,
+    snippet: wire.snippet,
+    headingPath: wire.headingPath,
+    startOffset: wire.startOffset,
+    endOffset: wire.endOffset,
+    indexedAt: wire.indexedAt,
+  }
+}
+
+function metaToWire(meta: Omit<VaultMeta, 'id'>): VaultMetaRowWire {
+  return {
+    vaultPath: meta.vaultPath,
+    modelVersion: meta.modelVersion,
+    totalNotes: meta.totalNotes,
+    lastFullIndex: meta.lastFullIndex,
+  }
+}
+
+function wireToMeta(wire: VaultMetaRowWire): VaultMeta {
+  return {
+    id: 'meta',
+    vaultPath: wire.vaultPath,
+    modelVersion: wire.modelVersion,
+    totalNotes: wire.totalNotes,
+    lastFullIndex: wire.lastFullIndex,
+  }
 }
 
 // ── VectorStore class ─────────────────────────────────────────────────────────
 
 export class VectorStore {
-  private db: IDBPDatabase | null = null
   public readonly vaultId: string
+  private readonly vaultPath: string
 
-  constructor(vaultId: string) {
+  constructor(vaultId: string, vaultPath: string) {
     this.vaultId = vaultId
+    this.vaultPath = vaultPath
   }
+
+  // ── lifecycle ───────────────────────────────────────────────────────────────
 
   async open(): Promise<void> {
-    this.db = await openVaultDB(this.vaultId)
+    await vectorStoreOpen(this.vaultPath)
   }
 
-  private ensureOpen(): IDBPDatabase {
-    if (!this.db) throw new Error('VectorStore not opened. Call open() first.')
-    return this.db
+  close(): void {
+    // Fire-and-forget — triggers WAL checkpoint on the Rust side.
+    vectorStoreClose().catch((err: unknown) => {
+      console.warn('[VectorStore] close error:', err)
+    })
   }
 
-  // ── Chunk operations ────────────────────────────────────────────────────────
-
-  async upsertChunk(entry: ChunkVector): Promise<void> {
-    await this.ensureOpen().put(STORE_CHUNKS, entry)
-  }
+  // ── writes ──────────────────────────────────────────────────────────────────
 
   async upsertChunks(entries: ChunkVector[]): Promise<void> {
-    const db = this.ensureOpen()
-    const tx = db.transaction(STORE_CHUNKS, 'readwrite')
-    await Promise.all([
-      ...entries.map((e) => tx.store.put(e)),
-      tx.done,
-    ])
+    await vectorUpsertChunks(entries.map(chunkToWire))
   }
 
   async deleteChunksForNote(notePath: string): Promise<void> {
-    const db = this.ensureOpen()
-    const tx = db.transaction(STORE_CHUNKS, 'readwrite')
-    const index = tx.store.index('by_notePath')
-    const keys = await index.getAllKeys(notePath)
-    await Promise.all(keys.map((k) => tx.store.delete(k)))
-    await tx.done
-  }
-
-  async getChunksForNote(notePath: string): Promise<ChunkVector[]> {
-    const db = this.ensureOpen()
-    const index = db.transaction(STORE_CHUNKS, 'readonly').store.index('by_notePath')
-    return index.getAll(notePath)
-  }
-
-  async getAllChunks(): Promise<ChunkVector[]> {
-    return this.ensureOpen().getAll(STORE_CHUNKS)
+    await vectorDeleteChunksForNote(notePath)
   }
 
   async clearAll(): Promise<void> {
-    await this.ensureOpen().clear(STORE_CHUNKS)
+    await vectorClearAll()
+  }
+
+  // ── reads ───────────────────────────────────────────────────────────────────
+
+  async getChunksForNote(notePath: string): Promise<ChunkVector[]> {
+    const rows = await vectorGetChunksForNote(notePath)
+    return rows.map(wireToChunk)
+  }
+
+  async getAllChunks(): Promise<ChunkVector[]> {
+    const rows = await vectorGetAllChunks()
+    return rows.map(wireToChunk)
   }
 
   async count(): Promise<number> {
-    return this.ensureOpen().count(STORE_CHUNKS)
+    return vectorCount()
   }
 
-  // ── Stale / deleted detection ───────────────────────────────────────────────
+  // ── change detection ────────────────────────────────────────────────────────
 
-  /**
-   * Returns note paths that need re-indexing:
-   * - Not yet indexed, OR
-   * - Content hash changed
-   */
   async findStaleNotes(
     currentNotes: Array<{ path: string; contentHash: string }>
   ): Promise<string[]> {
-    const stale: string[] = []
-
-    for (const { path, contentHash } of currentNotes) {
-      const chunks = await this.getChunksForNote(path)
-      if (chunks.length === 0 || chunks[0].contentHash !== contentHash) {
-        stale.push(path)
-      }
-    }
-
-    return stale
+    const wire: NoteHashWire[] = currentNotes.map((n) => ({
+      path: n.path,
+      contentHash: n.contentHash,
+    }))
+    return vectorFindStaleNotes(wire)
   }
 
-  /**
-   * Returns note paths that are indexed but no longer exist in the vault.
-   */
   async findDeletedNotes(currentPaths: Set<string>): Promise<string[]> {
-    const allChunks = await this.getAllChunks()
-    const indexedPaths = new Set(allChunks.map((c) => c.notePath))
-    return Array.from(indexedPaths).filter((p) => !currentPaths.has(p))
+    return vectorFindDeletedNotes(Array.from(currentPaths))
   }
 
-  // ── Legacy compatibility (used by similaritySearch for note-level search) ───
+  // ── metadata ─────────────────────────────────────────────────────────────────
 
-  /**
-   * Returns the best (highest-scoring) chunk per note as a NoteVector-like object.
-   * Used by searchByNote to find the note's representative vector.
-   */
+  async getMeta(): Promise<VaultMeta | undefined> {
+    const wire = await vectorGetMeta()
+    return wire != null ? wireToMeta(wire) : undefined
+  }
+
+  async setMeta(meta: Omit<VaultMeta, 'id'>): Promise<void> {
+    await vectorSetMeta(metaToWire(meta))
+  }
+
+  async setVaultPathInMeta(vaultPath: string): Promise<void> {
+    const existing = await this.getMeta()
+    await this.setMeta({
+      vaultPath,
+      modelVersion: existing?.modelVersion ?? 'bge-micro-v2',
+      totalNotes: existing?.totalNotes ?? 0,
+      lastFullIndex: existing?.lastFullIndex ?? 0,
+    })
+  }
+
+  // ── Legacy compatibility ─────────────────────────────────────────────────────
+
   async getVector(notePath: string): Promise<NoteVector | undefined> {
     const chunks = await this.getChunksForNote(notePath)
     if (chunks.length === 0) return undefined
-    // Use first chunk as representative
     const c = chunks[0]
     return {
       path: c.notePath,
@@ -187,17 +243,11 @@ export class VectorStore {
     }
   }
 
-  /**
-   * Returns one NoteVector per note (first chunk) for backward compat.
-   */
   async getAllVectors(): Promise<NoteVector[]> {
     const allChunks = await this.getAllChunks()
-    // Group by notePath, take first chunk per note
     const byNote = new Map<string, ChunkVector>()
     for (const chunk of allChunks) {
-      if (!byNote.has(chunk.notePath)) {
-        byNote.set(chunk.notePath, chunk)
-      }
+      if (!byNote.has(chunk.notePath)) byNote.set(chunk.notePath, chunk)
     }
     return Array.from(byNote.values()).map((c) => ({
       path: c.notePath,
@@ -208,53 +258,5 @@ export class VectorStore {
       indexedAt: c.indexedAt,
       noteLength: c.endOffset,
     }))
-  }
-
-  /** Legacy upsert — wraps to chunk upsert */
-  async upsertVector(entry: NoteVector): Promise<void> {
-    const chunk: ChunkVector = {
-      id: `${entry.path}::0`,
-      notePath: entry.path,
-      chunkIndex: 0,
-      contentHash: entry.contentHash,
-      vector: entry.vector,
-      title: entry.title,
-      snippet: entry.snippet,
-      headingPath: '',
-      startOffset: 0,
-      endOffset: entry.noteLength,
-      indexedAt: entry.indexedAt,
-    }
-    await this.upsertChunk(chunk)
-  }
-
-  /** Legacy delete */
-  async deleteVector(notePath: string): Promise<void> {
-    await this.deleteChunksForNote(notePath)
-  }
-
-  // ── Meta ────────────────────────────────────────────────────────────────────
-
-  async getMeta(): Promise<VaultMeta | undefined> {
-    return this.ensureOpen().get(STORE_META, 'meta')
-  }
-
-  async setMeta(meta: Omit<VaultMeta, 'id'>): Promise<void> {
-    await this.ensureOpen().put(STORE_META, { id: 'meta', ...meta })
-  }
-
-  /** Update the vaultPath recorded in meta (called after vault move/rename) */
-  async setVaultPathInMeta(vaultPath: string): Promise<void> {
-    const existing = await this.getMeta()
-    await this.ensureOpen().put(STORE_META, {
-      ...(existing ?? { modelVersion: 'bge-micro-v2', totalNotes: 0, lastFullIndex: 0 }),
-      id: 'meta',
-      vaultPath,
-    })
-  }
-
-  close() {
-    this.db?.close()
-    this.db = null
   }
 }

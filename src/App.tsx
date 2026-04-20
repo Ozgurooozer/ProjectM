@@ -146,7 +146,7 @@ function AppContent() {
         setTagIndex(tagIdx)
 
         const vaultId = await getOrCreateVaultId(lastPath)
-        const store = await openVectorStore(vaultId)
+        const store = await openVectorStore(vaultId, lastPath)
         setVectorStore(store)
         await store.setVaultPathInMeta(lastPath)
         // startup'ta tek seferlik — cleanup gerekmez

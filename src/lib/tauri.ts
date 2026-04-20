@@ -129,3 +129,80 @@ export async function readSnapshot(path: string): Promise<string> {
 export async function deleteSnapshot(path: string): Promise<void> {
   return invoke<void>('delete_snapshot', { path })
 }
+
+// ---- Vector Store (SQLite) ----
+
+/** Wire format: vector is base64-encoded f32 LE bytes (384 floats → 1536 bytes) */
+export interface ChunkRowWire {
+  id: string
+  notePath: string
+  chunkIndex: number
+  contentHash: string
+  vector: string        // base64
+  title: string
+  snippet: string
+  headingPath: string
+  startOffset: number
+  endOffset: number
+  indexedAt: number
+}
+
+export interface NoteHashWire {
+  path: string
+  contentHash: string
+}
+
+export interface VaultMetaRowWire {
+  vaultPath: string
+  modelVersion: string
+  totalNotes: number
+  lastFullIndex: number
+}
+
+export async function vectorStoreOpen(vaultPath: string): Promise<void> {
+  return invoke<void>('vector_store_open', { vaultPath })
+}
+
+export async function vectorStoreClose(): Promise<void> {
+  return invoke<void>('vector_store_close')
+}
+
+export async function vectorUpsertChunks(chunks: ChunkRowWire[]): Promise<void> {
+  return invoke<void>('vector_upsert_chunks', { chunks })
+}
+
+export async function vectorDeleteChunksForNote(notePath: string): Promise<void> {
+  return invoke<void>('vector_delete_chunks_for_note', { notePath })
+}
+
+export async function vectorGetChunksForNote(notePath: string): Promise<ChunkRowWire[]> {
+  return invoke<ChunkRowWire[]>('vector_get_chunks_for_note', { notePath })
+}
+
+export async function vectorGetAllChunks(): Promise<ChunkRowWire[]> {
+  return invoke<ChunkRowWire[]>('vector_get_all_chunks')
+}
+
+export async function vectorClearAll(): Promise<void> {
+  return invoke<void>('vector_clear_all')
+}
+
+export async function vectorCount(): Promise<number> {
+  return invoke<number>('vector_count')
+}
+
+export async function vectorFindStaleNotes(currentNotes: NoteHashWire[]): Promise<string[]> {
+  return invoke<string[]>('vector_find_stale_notes', { currentNotes })
+}
+
+export async function vectorFindDeletedNotes(currentPaths: string[]): Promise<string[]> {
+  return invoke<string[]>('vector_find_deleted_notes', { currentPaths })
+}
+
+export async function vectorGetMeta(): Promise<VaultMetaRowWire | null> {
+  return invoke<VaultMetaRowWire | null>('vector_get_meta')
+}
+
+export async function vectorSetMeta(meta: VaultMetaRowWire): Promise<void> {
+  return invoke<void>('vector_set_meta', { meta })
+}
