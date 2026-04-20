@@ -3,6 +3,8 @@ use crate::fs_utils::retry_operation;
 use std::fs;
 use std::path::Path;
 use uuid::Uuid;
+use rayon::prelude::*;
+use memchr::memmem;
 
 #[tauri::command]
 pub fn open_vault(path: String) -> Result<Vec<FileNode>, String> {
@@ -15,49 +17,56 @@ pub fn open_vault(path: String) -> Result<Vec<FileNode>, String> {
 
 #[tauri::command]
 pub fn search_vault(vault_path: String, query: String) -> Result<Vec<SearchResult>, String> {
+    if query.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
     let query_lower = query.to_lowercase();
-    let mut results: Vec<SearchResult> = Vec::new();
+    let query_bytes = query_lower.as_bytes();
     let all_paths = collect_md_files(Path::new(&vault_path));
 
-    for path in all_paths {
-        let name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let name_without_ext = name.trim_end_matches(".md").to_string();
+    // Parallel search with rayon + SIMD-accelerated literal search with memchr
+    let results: Vec<SearchResult> = all_paths
+        .par_iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_string_lossy().to_string();
+            let name_without_ext = name.trim_end_matches(".md").to_string();
+            let normalized = normalize_path(path);
 
-        if name_without_ext.to_lowercase().contains(&query_lower) {
-            results.push(SearchResult {
-                path: normalize_path(&path),
-                name: name_without_ext,
-                snippet: String::new(),
-                match_type: "name".to_string(),
-            });
-            continue;
-        }
-
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Some(idx) = content.to_lowercase().find(&query_lower) {
-                let mut start = idx.saturating_sub(60);
-                while start > 0 && !content.is_char_boundary(start) {
-                    start -= 1;
-                }
-                let mut end = (idx + query.len() + 60).min(content.len());
-                while end < content.len() && !content.is_char_boundary(end) {
-                    end += 1;
-                }
-                let snippet = content[start..end].replace('\n', " ").trim().to_string();
-
-                results.push(SearchResult {
-                    path: normalize_path(&path),
+            // Name match (fast path)
+            if name_without_ext.to_lowercase().contains(&query_lower) {
+                return Some(SearchResult {
+                    path: normalized,
                     name: name_without_ext,
-                    snippet,
-                    match_type: "content".to_string(),
+                    snippet: String::new(),
+                    match_type: "name".to_string(),
                 });
             }
-        }
-    }
+
+            // Content match — memchr SIMD finder
+            let content = fs::read_to_string(path).ok()?;
+            let content_lower = content.to_lowercase();
+            let finder = memmem::Finder::new(query_bytes);
+            let idx = finder.find(content_lower.as_bytes())?;
+
+            let mut start = idx.saturating_sub(60);
+            while start > 0 && !content.is_char_boundary(start) {
+                start -= 1;
+            }
+            let mut end = (idx + query.len() + 60).min(content.len());
+            while end < content.len() && !content.is_char_boundary(end) {
+                end += 1;
+            }
+            let snippet = content[start..end].replace('\n', " ").trim().to_string();
+
+            Some(SearchResult {
+                path: normalized,
+                name: name_without_ext,
+                snippet,
+                match_type: "content".to_string(),
+            })
+        })
+        .collect();
 
     Ok(results)
 }
