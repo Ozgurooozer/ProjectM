@@ -13,6 +13,7 @@ import { writeNote, readNote } from '../../lib/tauri'
 import { exportToPdf } from '../../lib/exportPdf'
 import { exportToHtml } from '../../lib/exportHtml'
 import { FrontmatterPanel } from './FrontmatterPanel'
+import { TabBar } from './TabBar'
 import { slashCommandExtension } from '../../lib/slashCommandExtension'
 import { eventBus } from '../../lib/events'
 
@@ -131,6 +132,7 @@ export function Editor({ showPreview, onTogglePreview }: Props) {
 
   return (
     <div className="flex flex-col h-full">
+      <TabBar />
       <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-700 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-sm text-zinc-300 truncate">{noteName}</span>

@@ -38,6 +38,7 @@ export function useNote(): UseNoteReturn {
   async function openNote(path: string) {
     const content = await readNote(path)
     setActiveNote(path, content)
+    useAppStore.getState().openTab(path)
     eventBus.emit('note:opened', { path, content })
   }
 
