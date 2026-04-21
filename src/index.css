@@ -36,6 +36,22 @@
   }
 }
 
+/* ── Design tokens — use these instead of hardcoded zinc classes ─────────── */
+@layer components {
+  /* Text */
+  .text-muted   { @apply text-zinc-500; }
+  .text-faint   { @apply text-zinc-600; }
+  .text-dimmed  { @apply text-zinc-700; }
+
+  /* Surfaces */
+  .panel-bg     { @apply bg-zinc-900; }
+  .panel-bg-alt { @apply bg-zinc-800; }
+
+  /* Borders */
+  .panel-border { @apply border-zinc-800; }
+  .item-border  { @apply border-zinc-700; }
+}
+
 .cm-editor {
   height: 100%;
 }
