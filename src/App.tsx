@@ -99,19 +99,25 @@ function AppContent() {
 
       // Step 1: open vault file tree — must succeed for anything to show
       let tree: import('./types').FileNode[]
-      let vaultId: string
       try {
-        ;[tree, vaultId] = await Promise.all([
-          openVault(lastPath),
-          getOrCreateVaultId(lastPath),
-        ])
+        tree = await openVault(lastPath)
       } catch (err) {
-        console.warn('Could not restore last vault (open failed):', err)
+        console.warn('Could not restore last vault (openVault failed):', err)
         return
       }
 
+      // Show file tree immediately — don't wait for vaultId or SQLite
       setVault(lastPath, tree)
       getCurrentWindow().setTitle(`${lastPath.split(/[\\/]/).pop()} — Vault`)
+
+      // vaultId only needed for SQLite — get separately, non-blocking
+      let vaultId: string
+      try {
+        vaultId = await getOrCreateVaultId(lastPath)
+      } catch (err) {
+        console.warn('getOrCreateVaultId failed (SQLite skipped):', err)
+        return
+      }
 
       // Step 2: restore last note (independent of SQLite)
       const lastNotePath = await loadLastNotePath()

@@ -128,14 +128,10 @@ export function useVault(): UseVaultReturn {
     // Same path — no need to do anything
     if (normalized === vaultPath) return
 
-    // Open vault file tree + get vault identity in parallel
+    // Open vault file tree first — show it immediately
     let tree: import('../types').FileNode[]
-    let vaultId: string
     try {
-      ;[tree, vaultId] = await Promise.all([
-        openVault(normalized),
-        getOrCreateVaultId(normalized),
-      ])
+      tree = await openVault(normalized)
     } catch (err) {
       console.error('[useVault] openVault failed:', err)
       return
@@ -147,16 +143,23 @@ export function useVault(): UseVaultReturn {
     await saveRecentNotes([])
     await saveLastVaultPath(normalized)
     getCurrentWindow().setTitle(`${normalized.split(/[\\/]/).pop() ?? normalized} — Vault`)
-
     eventBus.emit('vault:opened', { path: normalized })
 
     // Cancel any running indexing from previous vault
     cancelIndexingRef.current?.()
     cancelIndexingRef.current = null
 
+    // vaultId only needed for SQLite — get separately, non-blocking
+    let vaultId: string
+    try {
+      vaultId = await getOrCreateVaultId(normalized)
+    } catch (err) {
+      console.warn('[useVault] getOrCreateVaultId failed (SQLite skipped):', err)
+      return
+    }
+
     // SQLite + indexing — errors here must NOT block the file tree
     try {
-      // If same vault identity (moved/renamed path), reuse existing store
       const currentStore = useAppStore.getState().vectorStore
       if (currentStore && currentStore.vaultId === vaultId) {
         await currentStore.setVaultPathInMeta(normalized)
