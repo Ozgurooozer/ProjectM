@@ -28,12 +28,12 @@ import { RightPanel } from './components/Layout/RightPanel'
 import { StatusBar } from './components/Layout/StatusBar'
 import { eventBus } from './lib/events'
 import { pluginRegistry } from './lib/plugins'
-import { embeddingWorker } from './lib/embeddingWorkerManager'
 import { openVectorStore, startIndexingWhenReady } from './lib/vaultSetup'
 import type { BacklinkEntry } from './types'
 import { useSimilarNotes } from './hooks/useSimilarNotes'
 import { usePanelLayout } from './hooks/usePanelLayout'
 import { useCommandRegistry } from './hooks/useCommandRegistry'
+import { useModelLoader } from './hooks/useModelLoader'
 import { openOrCreateDailyNote } from './lib/dailyNotes'
 import { pickRandomNote } from './lib/randomNote'
 
@@ -42,7 +42,6 @@ function AppContent() {
     setVault, setBacklinkIndex, setActiveNote, updateSettings, settings,
     setTagIndex, setPinnedNotes, setRecentNotes,
     readingMode, toggleReadingMode,
-    setEmbeddingStatus, setEmbeddingProgress,
     setVectorStore, setIndexingProgress,
     leftPanelOpen, rightPanelOpen,
     setRightPanel,
@@ -59,6 +58,7 @@ function AppContent() {
 
   useSimilarNotes()
   useCommandRegistry(setRightPanel)
+  useModelLoader()
 
   // ── Daily note handler ─────────────────────────────────────
   const handleDailyNote = useCallback(async () => {
@@ -90,18 +90,6 @@ function AppContent() {
 
   useEffect(() => eventBus.on('ui:open-daily-note', handleDailyNote), [handleDailyNote])
   useEffect(() => eventBus.on('ui:open-random-note', handleRandomNote), [handleRandomNote])
-
-  // ── Model loading ──────────────────────────────────────────
-  useEffect(() => {
-    const unsubStatus = embeddingWorker.onStatusChange(setEmbeddingStatus)
-    const unsubProgress = embeddingWorker.onProgress((status, progress) =>
-      setEmbeddingProgress({ status, progress })
-    )
-    embeddingWorker.loadModel().catch((err) =>
-      console.warn('Could not load embedding model:', err)
-    )
-    return () => { unsubStatus(); unsubProgress() }
-  }, [])
 
   // ── Restore persisted state on startup ────────────────────
   useEffect(() => {
