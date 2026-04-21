@@ -129,12 +129,19 @@ export function useVault(): UseVaultReturn {
     if (normalized === vaultPath) return
 
     // Open vault file tree + get vault identity in parallel
-    const [tree, vaultId] = await Promise.all([
-      openVault(normalized),
-      getOrCreateVaultId(normalized),
-    ])
+    let tree: import('../types').FileNode[]
+    let vaultId: string
+    try {
+      ;[tree, vaultId] = await Promise.all([
+        openVault(normalized),
+        getOrCreateVaultId(normalized),
+      ])
+    } catch (err) {
+      console.error('[useVault] openVault failed:', err)
+      return
+    }
 
-    // Update core state
+    // Update core state — file tree is now available
     setVault(normalized, tree)
     setRecentNotes([])
     await saveRecentNotes([])
@@ -147,11 +154,35 @@ export function useVault(): UseVaultReturn {
     cancelIndexingRef.current?.()
     cancelIndexingRef.current = null
 
-    // If same vault identity (moved/renamed path), reuse existing store
-    const currentStore = useAppStore.getState().vectorStore
-    if (currentStore && currentStore.vaultId === vaultId) {
-      await currentStore.setVaultPathInMeta(normalized)
-      // Still need to reload indexes for the (possibly renamed) vault
+    // SQLite + indexing — errors here must NOT block the file tree
+    try {
+      // If same vault identity (moved/renamed path), reuse existing store
+      const currentStore = useAppStore.getState().vectorStore
+      if (currentStore && currentStore.vaultId === vaultId) {
+        await currentStore.setVaultPathInMeta(normalized)
+        const loadedFromDB = await loadIndexesFromSQLite()
+        if (!loadedFromDB) {
+          const [blIdx, tIdx] = await Promise.all([
+            buildBacklinkIndex(tree, readNote),
+            buildTagIndex(flattenTree(tree), readNote),
+          ])
+          setBacklinkIndex(blIdx)
+          setTagIndex(tIdx)
+          void persistIndexesToSQLite(blIdx, tIdx, flattenTree(tree))
+        }
+        cancelIndexingRef.current = startIndexingWhenReady(
+          currentStore,
+          () => useAppStore.getState().fileTree,
+          (p) => setIndexingProgress(progressToStore(p))
+        )
+        return
+      }
+
+      // New vault — open fresh SQLite store
+      const store = await openVectorStore(vaultId, normalized)
+      setVectorStore(store)
+      await store.setVaultPathInMeta(normalized)
+
       const loadedFromDB = await loadIndexesFromSQLite()
       if (!loadedFromDB) {
         const [blIdx, tIdx] = await Promise.all([
@@ -162,36 +193,15 @@ export function useVault(): UseVaultReturn {
         setTagIndex(tIdx)
         void persistIndexesToSQLite(blIdx, tIdx, flattenTree(tree))
       }
+
       cancelIndexingRef.current = startIndexingWhenReady(
-        currentStore,
+        store,
         () => useAppStore.getState().fileTree,
         (p) => setIndexingProgress(progressToStore(p))
       )
-      return
+    } catch (err) {
+      console.error('[useVault] SQLite/indexing setup failed (file tree still shown):', err)
     }
-
-    // New vault — open fresh SQLite store
-    const store = await openVectorStore(vaultId, normalized)
-    setVectorStore(store)
-    await store.setVaultPathInMeta(normalized)
-
-    // Load indexes from SQLite; fall back to full rebuild if empty
-    const loadedFromDB = await loadIndexesFromSQLite()
-    if (!loadedFromDB) {
-      const [blIdx, tIdx] = await Promise.all([
-        buildBacklinkIndex(tree, readNote),
-        buildTagIndex(flattenTree(tree), readNote),
-      ])
-      setBacklinkIndex(blIdx)
-      setTagIndex(tIdx)
-      void persistIndexesToSQLite(blIdx, tIdx, flattenTree(tree))
-    }
-
-    cancelIndexingRef.current = startIndexingWhenReady(
-      store,
-      () => useAppStore.getState().fileTree,
-      (p) => setIndexingProgress(progressToStore(p))
-    )
   }
 
   async function reloadTree() {

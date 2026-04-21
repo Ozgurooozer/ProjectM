@@ -97,15 +97,35 @@ function AppContent() {
       const lastPath = await loadLastVaultPath()
       if (!lastPath) return
 
+      // Step 1: open vault file tree — must succeed for anything to show
+      let tree: import('./types').FileNode[]
+      let vaultId: string
       try {
-        const [tree, vaultId] = await Promise.all([
+        ;[tree, vaultId] = await Promise.all([
           openVault(lastPath),
           getOrCreateVaultId(lastPath),
         ])
-        setVault(lastPath, tree)
-        getCurrentWindow().setTitle(`${lastPath.split(/[\\/]/).pop()} — Vault`)
+      } catch (err) {
+        console.warn('Could not restore last vault (open failed):', err)
+        return
+      }
 
-        // Open SQLite store first — needed for backlink/tag load
+      setVault(lastPath, tree)
+      getCurrentWindow().setTitle(`${lastPath.split(/[\\/]/).pop()} — Vault`)
+
+      // Step 2: restore last note (independent of SQLite)
+      const lastNotePath = await loadLastNotePath()
+      if (lastNotePath) {
+        try {
+          const content = await readNote(lastNotePath)
+          setActiveNote(lastNotePath, content)
+        } catch {
+          // Note may have been deleted
+        }
+      }
+
+      // Step 3: SQLite + indexing — errors here must NOT block the file tree
+      try {
         const store = await openVectorStore(vaultId, lastPath)
         setVectorStore(store)
         await store.setVaultPathInMeta(lastPath)
@@ -130,7 +150,6 @@ function AppContent() {
             setBacklinkIndex(backlinkIdx)
             setTagIndex(tagIdx)
           } else {
-            // SQLite empty — full rebuild
             const [backlinkIdx, tagIdx] = await Promise.all([
               buildBacklinkIndex(tree, readNote),
               buildTagIndex(flattenTree(tree), readNote),
@@ -139,7 +158,6 @@ function AppContent() {
             setTagIndex(tagIdx)
           }
         } catch {
-          // SQLite load failed — fall back to rebuild
           const [backlinkIdx, tagIdx] = await Promise.all([
             buildBacklinkIndex(tree, readNote),
             buildTagIndex(flattenTree(tree), readNote),
@@ -158,18 +176,8 @@ function AppContent() {
             message: p.message,
           })
         )
-
-        const lastNotePath = await loadLastNotePath()
-        if (lastNotePath) {
-          try {
-            const content = await readNote(lastNotePath)
-            setActiveNote(lastNotePath, content)
-          } catch {
-            // Note may have been deleted
-          }
-        }
       } catch (err) {
-        console.warn('Could not restore last vault:', err)
+        console.warn('SQLite/indexing setup failed (file tree still shown):', err)
       }
     }
 
