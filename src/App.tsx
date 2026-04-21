@@ -5,7 +5,7 @@ import {
   loadSettings, loadPinnedNotes, loadRecentNotes,
   loadLayoutState, saveLayoutState,
 } from './lib/persistence'
-import { openVault, readNote } from './lib/tauri'
+import { openVault, readNote, getOrCreateVaultId, backlinksGetAll, tagsGetAll } from './lib/tauri'
 import { buildBacklinkIndex } from './lib/backlinks'
 import { buildTagIndex } from './lib/tags'
 import { flattenTree } from './lib/wikilinks'
@@ -32,7 +32,7 @@ import { pluginRegistry } from './lib/plugins'
 import { commandRegistry } from './lib/commands'
 import { embeddingWorker } from './lib/embeddingWorkerManager'
 import { openVectorStore, startIndexingWhenReady } from './lib/vaultSetup'
-import { getOrCreateVaultId } from './lib/tauri'
+import type { BacklinkEntry } from './types'
 import { useSimilarNotes } from './hooks/useSimilarNotes'
 import { openOrCreateDailyNote } from './lib/dailyNotes'
 import { pickRandomNote } from './lib/randomNote'
@@ -138,23 +138,56 @@ function AppContent() {
       if (!lastPath) return
 
       try {
-        const tree = await openVault(lastPath)
+        const [tree, vaultId] = await Promise.all([
+          openVault(lastPath),
+          getOrCreateVaultId(lastPath),
+        ])
         setVault(lastPath, tree)
-
         getCurrentWindow().setTitle(`${lastPath.split(/[\\/]/).pop()} — Vault`)
 
-        const [backlinkIdx, tagIdx] = await Promise.all([
-          buildBacklinkIndex(tree, readNote),
-          buildTagIndex(flattenTree(tree), readNote),
-        ])
-        setBacklinkIndex(backlinkIdx)
-        setTagIndex(tagIdx)
-
-        const vaultId = await getOrCreateVaultId(lastPath)
+        // Open SQLite store first — needed for backlink/tag load
         const store = await openVectorStore(vaultId, lastPath)
         setVectorStore(store)
         await store.setVaultPathInMeta(lastPath)
-        // startup'ta tek seferlik — cleanup gerekmez
+
+        // Try loading indexes from SQLite; fall back to full rebuild
+        try {
+          const [blRows, tagRows] = await Promise.all([
+            backlinksGetAll(),
+            tagsGetAll(),
+          ])
+          if (blRows.length > 0 || tagRows.length > 0) {
+            const backlinkIdx: Record<string, BacklinkEntry[]> = {}
+            for (const row of blRows) {
+              if (!backlinkIdx[row.targetPath]) backlinkIdx[row.targetPath] = []
+              backlinkIdx[row.targetPath].push({ sourcePath: row.sourcePath, snippet: row.snippet })
+            }
+            const tagIdx: Record<string, string[]> = {}
+            for (const row of tagRows) {
+              if (!tagIdx[row.tag]) tagIdx[row.tag] = []
+              tagIdx[row.tag].push(row.notePath)
+            }
+            setBacklinkIndex(backlinkIdx)
+            setTagIndex(tagIdx)
+          } else {
+            // SQLite empty — full rebuild
+            const [backlinkIdx, tagIdx] = await Promise.all([
+              buildBacklinkIndex(tree, readNote),
+              buildTagIndex(flattenTree(tree), readNote),
+            ])
+            setBacklinkIndex(backlinkIdx)
+            setTagIndex(tagIdx)
+          }
+        } catch {
+          // SQLite load failed — fall back to rebuild
+          const [backlinkIdx, tagIdx] = await Promise.all([
+            buildBacklinkIndex(tree, readNote),
+            buildTagIndex(flattenTree(tree), readNote),
+          ])
+          setBacklinkIndex(backlinkIdx)
+          setTagIndex(tagIdx)
+        }
+
         startIndexingWhenReady(
           store,
           () => useAppStore.getState().fileTree,
@@ -395,3 +428,4 @@ export default function App() {
     </ErrorBoundary>
   )
 }
+
