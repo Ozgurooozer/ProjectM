@@ -4,12 +4,18 @@ import { type VectorStore, type ChunkVector } from './vectorStore'
 // ── Cosine similarity ─────────────────────────────────────────────────────────
 
 export function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) return 0
+  if (a.length !== b.length || a.length === 0) return 0
   let dot = 0
+  let magA = 0
+  let magB = 0
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i]
+    magA += a[i] * a[i]
+    magB += b[i] * b[i]
   }
-  return Math.max(-1, Math.min(1, dot))
+  const denom = Math.sqrt(magA) * Math.sqrt(magB)
+  if (denom === 0) return 0
+  return Math.max(-1, Math.min(1, dot / denom))
 }
 
 // ── Result types ──────────────────────────────────────────────────────────────
@@ -109,12 +115,14 @@ export async function searchByNote(
 ): Promise<SimilarityResult[]> {
   const { topK = 8, minScore = 0.45 } = options
 
-  // Get all chunks for this note, use the best one as query vector
   const noteChunks = await vectorStore.getChunksForNote(notePath)
   if (noteChunks.length === 0) return []
 
-  // Use first chunk as representative (title + intro usually most informative)
-  const queryVector = noteChunks[0].vector
+  // Use the longest chunk as query vector — it contains the most content
+  const queryChunk = noteChunks.reduce((best, c) =>
+    (c.endOffset - c.startOffset) > (best.endOffset - best.startOffset) ? c : best
+  )
+  const queryVector = queryChunk.vector
 
   const allChunks = await vectorStore.getAllChunks()
   return computeTopKByNote(queryVector, allChunks, {
