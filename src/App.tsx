@@ -1,9 +1,8 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import './index.css'
 import {
   loadLastVaultPath, loadLastNotePath,
   loadSettings, loadPinnedNotes, loadRecentNotes,
-  loadLayoutState, saveLayoutState,
 } from './lib/persistence'
 import { openVault, readNote, getOrCreateVaultId, backlinksGetAll, tagsGetAll } from './lib/tauri'
 import { buildBacklinkIndex } from './lib/backlinks'
@@ -34,6 +33,7 @@ import { embeddingWorker } from './lib/embeddingWorkerManager'
 import { openVectorStore, startIndexingWhenReady } from './lib/vaultSetup'
 import type { BacklinkEntry } from './types'
 import { useSimilarNotes } from './hooks/useSimilarNotes'
+import { usePanelLayout } from './hooks/usePanelLayout'
 import { openOrCreateDailyNote } from './lib/dailyNotes'
 import { pickRandomNote } from './lib/randomNote'
 
@@ -55,10 +55,7 @@ function AppContent() {
   const [showPreview, setShowPreview] = useState(true)
   const [showQuickSwitcher, setShowQuickSwitcher] = useState(false)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
-  const [leftPanelWidth, setLeftPanelWidth] = useState(240)
-  const [rightPanelWidth, setRightPanelWidth] = useState(256)
-  const isResizingLeft = useRef(false)
-  const isResizingRight = useRef(false)
+  const { leftPanelWidth, rightPanelWidth, isResizingLeft, isResizingRight } = usePanelLayout()
 
   useSimilarNotes()
 
@@ -227,48 +224,6 @@ function AppContent() {
     restoreVault()
     restoreSettings()
     restoreNavigation()
-  }, [])
-
-  // ── Layout restore ─────────────────────────────────────────
-  useEffect(() => {
-    loadLayoutState().then((layout) => {
-      setLeftPanelWidth(layout.leftPanelWidth)
-      setRightPanelWidth(layout.rightPanelWidth)
-    })
-  }, [])
-
-  // ── Panel resize mouse handlers ────────────────────────────
-  useEffect(() => {
-    function onMouseMove(e: MouseEvent) {
-      if (isResizingLeft.current) {
-        const w = Math.min(400, Math.max(160, e.clientX - 48)) // 48 = activity bar
-        setLeftPanelWidth(w)
-      }
-      if (isResizingRight.current) {
-        const w = Math.min(500, Math.max(200, window.innerWidth - e.clientX - 48))
-        setRightPanelWidth(w)
-      }
-    }
-    function onMouseUp() {
-      if (isResizingLeft.current) {
-        isResizingLeft.current = false
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-        setLeftPanelWidth((w) => { void saveLayoutState({ leftPanelWidth: w }); return w })
-      }
-      if (isResizingRight.current) {
-        isResizingRight.current = false
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-        setRightPanelWidth((w) => { void saveLayoutState({ rightPanelWidth: w }); return w })
-      }
-    }
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
-    }
   }, [])
 
   // ── Theme ──────────────────────────────────────────────────
