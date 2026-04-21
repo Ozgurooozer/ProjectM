@@ -241,3 +241,41 @@ export async function tagsSetForNote(
 export async function tagsGetAll(): Promise<TagRowWire[]> {
   return invoke<TagRowWire[]>('tags_get_all')
 }
+
+// ---- Vector Search (Rust-side cosine similarity) ----
+
+export interface VectorSearchResultWire {
+  notePath: string
+  title: string
+  snippet: string
+  score: number
+  headingPath: string
+}
+
+/** Encode number[] (384 floats) → base64 string for Rust. */
+function vectorToBase64Search(v: number[]): string {
+  const buf = new ArrayBuffer(v.length * 4)
+  const view = new DataView(buf)
+  for (let i = 0; i < v.length; i++) view.setFloat32(i * 4, v[i], true)
+  const bytes = new Uint8Array(buf)
+  // Batched to avoid stack overflow on large arrays
+  const chunks: string[] = []
+  for (let i = 0; i < bytes.length; i += 8192) {
+    chunks.push(String.fromCharCode(...bytes.subarray(i, i + 8192)))
+  }
+  return btoa(chunks.join(''))
+}
+
+export async function vectorSearch(
+  queryVector: number[],
+  topK: number,
+  minScore: number,
+  excludePath: string | null,
+): Promise<VectorSearchResultWire[]> {
+  return invoke<VectorSearchResultWire[]>('vector_search', {
+    queryVector: vectorToBase64Search(queryVector),
+    topK,
+    minScore,
+    excludePath,
+  })
+}

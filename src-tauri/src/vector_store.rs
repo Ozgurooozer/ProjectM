@@ -630,3 +630,172 @@ pub fn tags_get_all(
         .collect();
     rows.map_err(|e| format!("read all tags: {e}"))
 }
+
+// ── Cosine similarity search ──────────────────────────────────────────────────
+
+const VECTOR_DIM: usize = 384;
+const VECTOR_BYTES: usize = VECTOR_DIM * 4; // 384 × f32 = 1536 bytes
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VectorSearchResult {
+    pub note_path: String,
+    pub title: String,
+    pub snippet: String,
+    pub score: f32,
+    pub heading_path: String,
+}
+
+/// Convert raw f32 LE bytes into a fixed-size array.
+#[inline]
+fn bytes_to_f32_array(bytes: &[u8], out: &mut [f32; VECTOR_DIM]) -> Result<(), String> {
+    if bytes.len() != VECTOR_BYTES {
+        return Err(format!("wrong blob size: expected {VECTOR_BYTES}, got {}", bytes.len()));
+    }
+    for (i, chunk) in bytes.chunks_exact(4).enumerate() {
+        out[i] = f32::from_le_bytes(chunk.try_into().unwrap());
+    }
+    Ok(())
+}
+
+/// L2 norm — unrolled for SIMD auto-vectorization.
+#[inline(always)]
+fn l2_norm(v: &[f32; VECTOR_DIM]) -> f32 {
+    let mut sum = 0.0_f32;
+    for chunk in v.chunks_exact(4) {
+        sum += chunk[0] * chunk[0] + chunk[1] * chunk[1]
+             + chunk[2] * chunk[2] + chunk[3] * chunk[3];
+    }
+    sum.sqrt()
+}
+
+/// Cosine similarity — unrolled for SIMD auto-vectorization.
+/// `query_norm` is pre-computed once outside the loop.
+#[inline(always)]
+fn cosine_similarity_precomputed(
+    query: &[f32; VECTOR_DIM],
+    query_norm: f32,
+    other: &[f32; VECTOR_DIM],
+) -> f32 {
+    let mut dot = 0.0_f32;
+    let mut other_norm_sq = 0.0_f32;
+    for i in (0..VECTOR_DIM).step_by(4) {
+        dot += query[i]     * other[i]
+             + query[i + 1] * other[i + 1]
+             + query[i + 2] * other[i + 2]
+             + query[i + 3] * other[i + 3];
+        other_norm_sq += other[i]     * other[i]
+                       + other[i + 1] * other[i + 1]
+                       + other[i + 2] * other[i + 2]
+                       + other[i + 3] * other[i + 3];
+    }
+    let other_norm = other_norm_sq.sqrt();
+    if other_norm < f32::EPSILON { return 0.0; }
+    dot / (query_norm * other_norm)
+}
+
+/// Search for the top-K most similar notes to a query vector.
+/// Accepts a base64-encoded f32 LE query vector (384 floats = 1536 bytes).
+/// Returns results sorted by score descending, grouped by note (best chunk per note).
+#[tauri::command]
+pub fn vector_search(
+    query_vector: String,
+    top_k: usize,
+    min_score: f32,
+    exclude_path: Option<String>,
+    state: State<'_, VectorStoreState>,
+) -> Result<Vec<VectorSearchResult>, String> {
+    if top_k == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Decode query vector
+    let query_bytes = general_purpose::STANDARD
+        .decode(&query_vector)
+        .map_err(|e| format!("base64 decode query: {e}"))?;
+
+    let mut query_arr = [0.0_f32; VECTOR_DIM];
+    bytes_to_f32_array(&query_bytes, &mut query_arr)?;
+
+    let query_norm = l2_norm(&query_arr);
+    if query_norm < f32::EPSILON {
+        return Err("zero-norm query vector".into());
+    }
+
+    let guard = state.conn.lock()
+        .map_err(|e| format!("mutex poison: {e}"))?;
+    let conn = guard.as_ref().ok_or("vector store not open")?;
+
+    let mut stmt = conn.prepare(
+        "SELECT note_path, vector, title, snippet, heading_path FROM vectors",
+    ).map_err(|e| format!("prepare vector_search: {e}"))?;
+
+    // best_by_note: note_path → (score, title, snippet, heading_path)
+    let mut best_by_note: std::collections::HashMap<String, (f32, String, String, String)> =
+        std::collections::HashMap::new();
+
+    let exclude = exclude_path.as_deref();
+
+    let rows: Result<Vec<(String, Vec<u8>, String, String, String)>, _> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|e| format!("query vector_search: {e}"))?
+        .collect();
+
+    for (note_path, blob, title, snippet, heading_path) in
+        rows.map_err(|e| format!("read row: {e}"))?
+    {
+        if exclude == Some(note_path.as_str()) { continue; }
+        if blob.len() != VECTOR_BYTES { continue; }
+
+        let mut chunk_arr = [0.0_f32; VECTOR_DIM];
+        if bytes_to_f32_array(&blob, &mut chunk_arr).is_err() { continue; }
+
+        let score = cosine_similarity_precomputed(&query_arr, query_norm, &chunk_arr);
+        if score < min_score { continue; }
+
+        let entry = best_by_note.entry(note_path);
+        match entry {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                if score > e.get().0 {
+                    *e.get_mut() = (score, title, snippet, heading_path);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert((score, title, snippet, heading_path));
+            }
+        }
+    }
+
+    // Collect, partial-sort, truncate
+    let mut results: Vec<VectorSearchResult> = best_by_note
+        .into_iter()
+        .map(|(note_path, (score, title, snippet, heading_path))| VectorSearchResult {
+            note_path,
+            title,
+            snippet,
+            score,
+            heading_path,
+        })
+        .collect();
+
+    if results.len() > top_k {
+        results.select_nth_unstable_by(top_k, |a, b| {
+            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(top_k);
+    }
+
+    results.sort_unstable_by(|a, b| {
+        b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    Ok(results)
+}

@@ -60,6 +60,7 @@ pub fn run() {
             vector_store::backlinks_get_all,
             vector_store::tags_set_for_note,
             vector_store::tags_get_all,
+            vector_store::vector_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

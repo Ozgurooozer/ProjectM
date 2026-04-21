@@ -1,13 +1,12 @@
 import { embeddingWorker } from './embeddingWorkerManager'
 import { type VectorStore, type ChunkVector } from './vectorStore'
+import { vectorSearch } from './tauri'
 
-// ── Cosine similarity ─────────────────────────────────────────────────────────
+// ── Cosine similarity (kept for external use / tests) ─────────────────────────
 
 export function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length || a.length === 0) return 0
-  let dot = 0
-  let magA = 0
-  let magB = 0
+  let dot = 0, magA = 0, magB = 0
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i]
     magA += a[i] * a[i]
@@ -26,7 +25,7 @@ export interface SimilarityResult {
   snippet: string
   score: number
   scoreLabel: string
-  headingPath?: string   // best matching section
+  headingPath?: string
 }
 
 function scoreLabel(score: number): string {
@@ -36,57 +35,22 @@ function scoreLabel(score: number): string {
   return 'Loosely related'
 }
 
-// ── Chunk-based search helpers ────────────────────────────────────────────────
-
-/**
- * Given a query vector and all chunks, returns the best score per note.
- * Multiple chunks from the same note are collapsed — only the highest score wins.
- */
-function computeTopKByNote(
-  queryVector: number[],
-  allChunks: ChunkVector[],
-  options: {
-    topK: number
-    minScore: number
-    excludePath: string | null
+function wireToResult(wire: { notePath: string; title: string; snippet: string; score: number; headingPath: string }): SimilarityResult {
+  return {
+    path: wire.notePath,
+    title: wire.title,
+    snippet: wire.snippet,
+    score: wire.score,
+    scoreLabel: scoreLabel(wire.score),
+    headingPath: wire.headingPath || undefined,
   }
-): SimilarityResult[] {
-  const { topK, minScore, excludePath } = options
-
-  // Best score per note
-  const bestByNote = new Map<string, { score: number; chunk: ChunkVector }>()
-
-  for (const chunk of allChunks) {
-    if (chunk.notePath === excludePath) continue
-    if (chunk.vector.length === 0) continue
-
-    const score = cosineSimilarity(queryVector, chunk.vector)
-    if (score < minScore) continue
-
-    const existing = bestByNote.get(chunk.notePath)
-    if (!existing || score > existing.score) {
-      bestByNote.set(chunk.notePath, { score, chunk })
-    }
-  }
-
-  return Array.from(bestByNote.values())
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK)
-    .map(({ score, chunk }) => ({
-      path: chunk.notePath,
-      title: chunk.title,
-      snippet: chunk.snippet,
-      score,
-      scoreLabel: scoreLabel(score),
-      headingPath: chunk.headingPath || undefined,
-    }))
 }
 
 // ── Public search API ─────────────────────────────────────────────────────────
 
 export async function searchByQuery(
   query: string,
-  vectorStore: VectorStore,
+  _vectorStore: VectorStore,
   options: {
     topK?: number
     minScore?: number
@@ -101,8 +65,8 @@ export async function searchByQuery(
     `Represent this query for searching relevant passages: ${query}`
   )
 
-  const allChunks = await vectorStore.getAllChunks()
-  return computeTopKByNote(queryVector, allChunks, { topK, minScore, excludePath })
+  const results = await vectorSearch(queryVector, topK, minScore, excludePath)
+  return results.map(wireToResult)
 }
 
 export async function searchByNote(
@@ -118,18 +82,12 @@ export async function searchByNote(
   const noteChunks = await vectorStore.getChunksForNote(notePath)
   if (noteChunks.length === 0) return []
 
-  // Use the longest chunk as query vector — it contains the most content
   const queryChunk = noteChunks.reduce((best, c) =>
     (c.endOffset - c.startOffset) > (best.endOffset - best.startOffset) ? c : best
   )
-  const queryVector = queryChunk.vector
 
-  const allChunks = await vectorStore.getAllChunks()
-  return computeTopKByNote(queryVector, allChunks, {
-    topK,
-    minScore,
-    excludePath: notePath,
-  })
+  const results = await vectorSearch(queryChunk.vector, topK, minScore, notePath)
+  return results.map(wireToResult)
 }
 
 // ── Hybrid search result types ────────────────────────────────────────────────
@@ -158,10 +116,8 @@ export function mergeSearchResults(
 
   for (const path of keywordPaths) {
     if (semanticMap.has(path)) continue
-    // Find first chunk for this note
     const chunk = allChunks.find((c) => c.notePath === path)
     if (!chunk) continue
-
     merged.push({
       path,
       title: chunk.title,
